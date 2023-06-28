@@ -3,49 +3,85 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import cv2
+import ot
 
 import random
 from typing import *
 
+# class EMDFunction(torch.autograd.Function):
+#     @staticmethod
+#     def forward(ctx, x, y):
+#         x_np = x.detach().cpu().numpy().astype(np.float32)
+#         y_np = y.detach().cpu().numpy().astype(np.float32)
+
+#         # Create the weights for x and y
+#         x_weights = np.full((x_np.shape[0], 1), 1 / x_np.shape[0]).astype(np.float32)
+#         y_weights = np.full((y_np.shape[0], 1), 1 / y_np.shape[0]).astype(np.float32)
+
+#         # Add the weights as the first column in x and y
+#         x_np = np.hstack((x_weights, x_np))
+#         y_np = np.hstack((y_weights, y_np))
+        
+#         emd, _, flow = cv2.EMD(x_np, y_np, cv2.DIST_L2)
+        
+#         # Save variables needed for backward in ctx
+#         ctx.save_for_backward(torch.tensor(flow), x.float(), y.float())
+        
+#         return torch.tensor(emd, dtype=x.dtype, device=x.device)
+    
+#     @staticmethod
+#     def backward(ctx, grad_output):
+#         flow, x, y = ctx.saved_tensors
+#         grad_x = torch.zeros_like(x)
+#         grad_y = torch.zeros_like(y)
+
+#         for i in range(flow.size(0)):
+#             for j in range(flow.size(1)):
+#                 grad_x[i] += 2.0 * (x[i] - y[j]) * flow[i, j] * grad_output
+#                 grad_y[j] += -2.0 * (x[i] - y[j]) * flow[i, j] * grad_output
+
+#         return grad_x/10, grad_y/10
+    
 class EMDFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, y):
-        x_np = x.detach().cpu().numpy().astype(np.float32)
-        y_np = y.detach().cpu().numpy().astype(np.float32)
+    def forward(ctx, dist_matrix):
+        n = dist_matrix.shape[0]
+        m = dist_matrix.shape[1]
 
         # Create the weights for x and y
-        x_weights = np.full((x_np.shape[0], 1), 1 / x_np.shape[0]).astype(np.float32)
-        y_weights = np.full((y_np.shape[0], 1), 1 / y_np.shape[0]).astype(np.float32)
+        wx = np.full((n, 1), 1 / n).astype(np.float32)
+        wy = np.full((m, 1), 1 / m).astype(np.float32)
 
-        # Add the weights as the first column in x and y
-        x_np = np.hstack((x_weights, x_np))
-        y_np = np.hstack((y_weights, y_np))
-        
-        # Convert x and y to the correct shape for cv2.EMD
-        # x_np = x_np.reshape((-1, x_np.shape[-1]))
-        # y_np = y_np.reshape((-1, y_np.shape[-1]))
-        # x_np = np.expand_dims(x_np, 0)
-        # y_np = np.expand_dims(y_np, 0)
-        
-        emd, _, flow = cv2.EMD(x_np, y_np, cv2.DIST_L2)
-        
+        # Use weights to compute EMD
+        emd, _, flow = cv2.EMD(wx, wy, cv2.DIST_USER, dist_matrix.cpu().numpy())
+
         # Save variables needed for backward in ctx
-        ctx.save_for_backward(torch.tensor(flow), x.float(), y.float())
+        ctx.save_for_backward(torch.tensor(flow))
         
-        return torch.tensor(emd, dtype=x.dtype, device=x.device)
+        return torch.tensor(emd, dtype=dist_matrix.dtype, device=dist_matrix.device)
     
     @staticmethod
     def backward(ctx, grad_output):
-        flow, x, y = ctx.saved_tensors
-        grad_x = torch.zeros_like(x)
-        grad_y = torch.zeros_like(y)
+        flow, = ctx.saved_tensors
+        grad = flow * grad_output
+        return grad
+    
+class OTEMDFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, cost_matrix):
+        flow = ot.emd(torch.tensor([]), torch.tensor([]), cost_matrix)
+        emd = (cost_matrix * flow).sum()
 
-        for i in range(flow.size(0)):
-            for j in range(flow.size(1)):
-                grad_x[i] += 2.0 * (x[i] - y[j]) * flow[i, j] * grad_output
-                grad_y[j] += -2.0 * (x[i] - y[j]) * flow[i, j] * grad_output
+        ctx.save_for_backward(flow)
 
-        return grad_x/10, grad_y/10
+        return torch.tensor(emd, dtype=cost_matrix.dtype, device=cost_matrix.device)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        flow, = ctx.saved_tensors
+        grad_cost_matrix = flow * grad_output
+        
+        return grad_cost_matrix
 
 class CPCCLoss(nn.Module):
     '''
@@ -84,12 +120,26 @@ class CPCCLoss(nn.Module):
         # sorted_sums = torch.stack(target_fine_list, 0)
 
         # use emd
+
+        # code for cv2
+        # pairwise_dist = []
+        # for i in range(len(all_fine)):
+        #     for j in range(i+1, len(all_fine)):
+        #         samples_i = representations[target_fine == all_fine[i]]
+        #         samples_j = representations[target_fine == all_fine[j]]
+        #         dist_matrix = pairwise_distance(samples_i, samples_j)
+        #         pairwise_dist.append(EMDFunction.apply(dist_matrix))
+        # pairwise_dist = torch.stack(pairwise_dist)
+        
+        # code for pot
         pairwise_dist = []
         for i in range(len(all_fine)):
             for j in range(i+1, len(all_fine)):
                 samples_i = representations[target_fine == all_fine[i]]
                 samples_j = representations[target_fine == all_fine[j]]
-                pairwise_dist.append(EMDFunction.apply(samples_i, samples_j))
+                dist_matrix = torch.cdist(samples_i, samples_j, p=2)
+                pairwise_dist.append(OTEMDFunction.apply(dist_matrix))
+                # pairwise_dist.append(ot.emd2(torch.tensor([]), torch.tensor([]), dist_matrix))
         pairwise_dist = torch.stack(pairwise_dist)
 
         # if self.distance_type == 'l2':

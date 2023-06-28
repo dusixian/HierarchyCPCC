@@ -4,7 +4,7 @@ from typing import List
 from nltk.tree import Tree
 
 from better_mistakes.trees import get_label
-from better_mistakes.data.softmax_cascade import SoftmaxCascade
+# from better_mistakes.data.softmax_cascade import SoftmaxCascade
 
 
 class HierarchicalLLLoss(torch.nn.Module):

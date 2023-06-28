@@ -14,7 +14,7 @@ class HierarchyMNIST(MNIST, Hierarchy):
     if case == 1, <> 5 for coarse, odd/even split for mid
     '''
     def __init__(self, case, *args, **kw):
-        super(HierarchyMNIST, self).__init__(*args, **kw)
+        super(HierarchyMNIST, self).__init__(download=True, *args, **kw)
         self.case = case
         self.fine_map = np.array(range(10))
         self.fine_names = ["0","1","2","3","4","5","6","7","8","9"]

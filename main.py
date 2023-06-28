@@ -259,7 +259,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 train_coarse_accs.extend(acc_coarse)
 
                 if idx % 100 == 1:
-                    print(f"Train Loss: {loss}, Acc_fine: {sum(train_fine_accs)/len(train_fine_accs)}")
+                    print(f"Train Loss: {loss}, Acc_fine: {sum(train_fine_accs)/len(train_fine_accs)}, loss_cpcc: {loss_cpcc}")
             
             scheduler.step()
             

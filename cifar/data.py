@@ -10,7 +10,7 @@ from hierarchy.data import Hierarchy, get_k_shot
 
 class HierarchyCIFAR(CIFAR100, Hierarchy):
     def __init__(self, *args, **kw):
-        super(HierarchyCIFAR, self).__init__(*args, **kw)
+        super(HierarchyCIFAR, self).__init__(download=True, *args, **kw)
         self.fine_map = np.array(range(100))
         # coarse_map = mapping fine id to coarse id
         # fine coarse id labeled alphabetically
