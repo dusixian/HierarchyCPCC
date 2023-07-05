@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 import ot
+from itertools import combinations
 
 import random
 from typing import *
@@ -69,18 +70,15 @@ class EMDFunction(torch.autograd.Function):
 class OTEMDFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, cost_matrix):
-        flow = ot.emd(torch.tensor([]), torch.tensor([]), cost_matrix)
-        emd = (cost_matrix * flow).sum()
-
+        flow = ot.emd(torch.tensor([]), torch.tensor([]), cost_matrix, numThreads=20)
+        emd = torch.sum(cost_matrix * flow)
         ctx.save_for_backward(flow)
-
-        return torch.tensor(emd, dtype=cost_matrix.dtype, device=cost_matrix.device)
+        return emd
     
     @staticmethod
     def backward(ctx, grad_output):
         flow, = ctx.saved_tensors
         grad_cost_matrix = flow * grad_output
-        
         return grad_cost_matrix
 
 class CPCCLoss(nn.Module):
@@ -127,20 +125,26 @@ class CPCCLoss(nn.Module):
         #     for j in range(i+1, len(all_fine)):
         #         samples_i = representations[target_fine == all_fine[i]]
         #         samples_j = representations[target_fine == all_fine[j]]
-        #         dist_matrix = pairwise_distance(samples_i, samples_j)
+        #         dist_matrix = torch.cdist(samples_i, samples_j, p=2)
         #         pairwise_dist.append(EMDFunction.apply(dist_matrix))
         # pairwise_dist = torch.stack(pairwise_dist)
         
         # code for pot
-        pairwise_dist = []
-        for i in range(len(all_fine)):
-            for j in range(i+1, len(all_fine)):
-                samples_i = representations[target_fine == all_fine[i]]
-                samples_j = representations[target_fine == all_fine[j]]
-                dist_matrix = torch.cdist(samples_i, samples_j, p=2)
-                pairwise_dist.append(OTEMDFunction.apply(dist_matrix))
-                # pairwise_dist.append(ot.emd2(torch.tensor([]), torch.tensor([]), dist_matrix))
-        pairwise_dist = torch.stack(pairwise_dist)
+        # pairwise_dist = []
+        # for i in range(len(all_fine)):
+        #     for j in range(i+1, len(all_fine)):
+        #         samples_i = representations[target_fine == all_fine[i]]
+        #         samples_j = representations[target_fine == all_fine[j]]
+        #         dist_matrix = torch.cdist(samples_i, samples_j, p=2)
+        #         pairwise_dist.append(OTEMDFunction.apply(dist_matrix))
+        #         # pairwise_dist.append(ot.emd2(torch.tensor([]), torch.tensor([]), dist_matrix))
+        # pairwise_dist = torch.stack(pairwise_dist)
+
+        all_pairwise = torch.cdist(representations, representations)
+        target_indices = [torch.where(target_fine == fine)[0] for fine in all_fine]
+        combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
+        dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
+        pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
 
         # if self.distance_type == 'l2':
         #     pairwise_dist = F.pdist(sorted_sums, p=2.0) # get pairwise distance
@@ -202,7 +206,9 @@ class CPCCLoss(nn.Module):
         # when coarse class the same, shortest distance == 2
         # otherwise, shortest distance == 4
         # TODO: weighted tree, arbitrary level on the tree
-        tree_pairwise_dist = torch.tensor([2 if fine2layer[all_fine[i]] == fine2layer[all_fine[j]] else 4 for i in range(len(all_fine)) for j in range(i+1,len(all_fine))], device=device)
+        tree_pairwise_dist = torch.tensor([2 if fine2layer[all_fine[i]] == fine2layer[all_fine[j]] 
+                                           else 4 for (i,j) in combinations(range(len(all_fine)),2)], 
+                                           device=device)
         return tree_pairwise_dist
     
     def three_level_dT(self, all_fine, fine2layers, device):
