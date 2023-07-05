@@ -137,7 +137,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             criterion_ce = nn.CrossEntropyLoss().to(device)
         else:
             criterion_ce = nn.CrossEntropyLoss().to(device)
-        criterion_cpcc = CPCCLoss(dataset, cpcc_layers, cpcc_metric).to(device)
+        criterion_cpcc = CPCCLoss(dataset, is_emd, cpcc_layers, cpcc_metric).to(device)
         criterion_group = GroupLasso(dataset).to(device)
         
         with open(save_dir+'/config.json', 'w') as fp:
@@ -391,7 +391,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
         config = {**init_config, **optim_config, **scheduler_config}  
         
         criterion_ce = nn.CrossEntropyLoss().to(device)
-        criterion_cpcc = CPCCLoss(dataset, cpcc_layers, cpcc_metric).to(device)
+        criterion_cpcc = CPCCLoss(dataset, is_emd, cpcc_layers, cpcc_metric).to(device)
 
         with open(save_dir+'/config.json', 'w') as fp:
             json.dump(config, fp, sort_keys=True, indent=4)
@@ -1140,6 +1140,8 @@ if __name__ == '__main__':
     parser.add_argument("--cpcc_list", nargs='+', default=['coarse'], help='ex: --cpcc-list mid coarse, for 3 layer cpcc')
     parser.add_argument("--group", default=0, type=int, help='0/1, grouplasso')
     parser.add_argument("--case", type=int, help='Type of MNIST, 0/1')
+    parser.add_argument("--train_on_mid", default=0, type=int, help='Train on fine or mid layer, 0/1')
+    parser.add_argument("--emd", default=0, type=int, help='use Euclidean distance or EMD, 0/1')
 
     parser.add_argument("--lamb",type=float,default=1,help='strength of CPCC regularization')
     
@@ -1158,6 +1160,8 @@ if __name__ == '__main__':
     cpcc_layers = args.cpcc_list
     case = args.case
     group = args.group
+    is_emd = args.emd
+    train_on_mid = args.train_on_mid
 
     num_workers = args.num_workers
     batch_size = args.batch_size
@@ -1172,6 +1176,7 @@ if __name__ == '__main__':
         os.makedirs(save_dir)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print("device: ", device)
 
     if dataset_name == 'BREEDS':
         for breeds_setting in ['living17','entity13','entity30','nonliving26']:

@@ -85,7 +85,7 @@ class CPCCLoss(nn.Module):
     '''
     CPCC as a mini-batch regularizer.
     '''
-    def __init__(self, dataset, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
+    def __init__(self, dataset, is_emd, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
         # make sure unique classes in layers[0] 
         super(CPCCLoss, self).__init__()
         
@@ -104,6 +104,7 @@ class CPCCLoss(nn.Module):
         self.fine2mid = dataset.mid_map
         self.fine2coarsest = dataset.coarsest_map
         self.distance_type = distance_type
+        self.is_emd = is_emd
 
         # TODO: map = [(weight, class_id)], current setting weight == 1 everywhere
         # four levels always at the same height
@@ -113,60 +114,41 @@ class CPCCLoss(nn.Module):
         # assume we only consider two level, fine and coarse
         # where fine and coarse always of the same height
         all_fine = torch.unique(target_fine)
-        # get the center of all fine classes
-        # target_fine_list = [torch.mean(torch.index_select(representations, 0, (target_fine == t).nonzero().flatten()),0) for t in all_fine]
-        # sorted_sums = torch.stack(target_fine_list, 0)
-
-        # use emd
-
-        # code for cv2
-        # pairwise_dist = []
-        # for i in range(len(all_fine)):
-        #     for j in range(i+1, len(all_fine)):
-        #         samples_i = representations[target_fine == all_fine[i]]
-        #         samples_j = representations[target_fine == all_fine[j]]
-        #         dist_matrix = torch.cdist(samples_i, samples_j, p=2)
-        #         pairwise_dist.append(EMDFunction.apply(dist_matrix))
-        # pairwise_dist = torch.stack(pairwise_dist)
         
-        # code for pot
-        # pairwise_dist = []
-        # for i in range(len(all_fine)):
-        #     for j in range(i+1, len(all_fine)):
-        #         samples_i = representations[target_fine == all_fine[i]]
-        #         samples_j = representations[target_fine == all_fine[j]]
-        #         dist_matrix = torch.cdist(samples_i, samples_j, p=2)
-        #         pairwise_dist.append(OTEMDFunction.apply(dist_matrix))
-        #         # pairwise_dist.append(ot.emd2(torch.tensor([]), torch.tensor([]), dist_matrix))
-        # pairwise_dist = torch.stack(pairwise_dist)
+        if self.is_emd:
+            pairwise_dist = []
+            all_pairwise = torch.cdist(representations, representations)
+            target_indices = [torch.where(target_fine == fine)[0] for fine in all_fine]
+            combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
+            dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
+            pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
+        
+        else: # use Euclidean distance
+            # get the center of all fine classes
+            target_fine_list = [torch.mean(torch.index_select(representations, 0, (target_fine == t).nonzero().flatten()),0) for t in all_fine]
+            sorted_sums = torch.stack(target_fine_list, 0)
 
-        all_pairwise = torch.cdist(representations, representations)
-        target_indices = [torch.where(target_fine == fine)[0] for fine in all_fine]
-        combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
-        dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
-        pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
-
-        # if self.distance_type == 'l2':
-        #     pairwise_dist = F.pdist(sorted_sums, p=2.0) # get pairwise distance
-        # elif self.distance_type == 'l1':
-        #     pairwise_dist = F.pdist(sorted_sums, p=1.0)
-        # elif self.distance_type == 'poincare':
-        #     # Project into the poincare ball with norm <= 1 - epsilon
-        #     # https://www.tensorflow.org/addons/api_docs/python/tfa/layers/PoincareNormalize
-        #     epsilon = 1e-5 
-        #     all_norms = torch.norm(sorted_sums, dim=1, p=2).unsqueeze(-1)
-        #     normalized_sorted_sums = sorted_sums * (1 - epsilon) / all_norms
-        #     all_normalized_norms = torch.norm(normalized_sorted_sums, dim=1, p=2) 
-        #     # F.pdist underflow, might be due to sqrt on very small values, 
-        #     # causing nan in gradients
-        #     # |u-v|^2
-        #     condensed_idx = torch.triu_indices(len(all_fine), len(all_fine), offset=1, device = sorted_sums.device)
-        #     numerator_square = torch.sum((normalized_sorted_sums[None, :] - normalized_sorted_sums[:, None])**2, -1)
-        #     numerator = numerator_square[condensed_idx[0],condensed_idx[1]]
-        #     # (1 - |u|^2) * (1 - |v|^2)
-        #     denominator_square = ((1 - all_normalized_norms**2).reshape(-1,1)) @ (1 - all_normalized_norms**2).reshape(1,-1)
-        #     denominator = denominator_square[condensed_idx[0],condensed_idx[1]]
-        #     pairwise_dist = torch.acosh(1 + 2 * (numerator/denominator))
+            if self.distance_type == 'l2':
+                pairwise_dist = F.pdist(sorted_sums, p=2.0) # get pairwise distance
+            elif self.distance_type == 'l1':
+                pairwise_dist = F.pdist(sorted_sums, p=1.0)
+            elif self.distance_type == 'poincare':
+                # Project into the poincare ball with norm <= 1 - epsilon
+                # https://www.tensorflow.org/addons/api_docs/python/tfa/layers/PoincareNormalize
+                epsilon = 1e-5 
+                all_norms = torch.norm(sorted_sums, dim=1, p=2).unsqueeze(-1)
+                normalized_sorted_sums = sorted_sums * (1 - epsilon) / all_norms
+                all_normalized_norms = torch.norm(normalized_sorted_sums, dim=1, p=2) 
+                # F.pdist underflow, might be due to sqrt on very small values, 
+                # causing nan in gradients
+                # |u-v|^2
+                condensed_idx = torch.triu_indices(len(all_fine), len(all_fine), offset=1, device = sorted_sums.device)
+                numerator_square = torch.sum((normalized_sorted_sums[None, :] - normalized_sorted_sums[:, None])**2, -1)
+                numerator = numerator_square[condensed_idx[0],condensed_idx[1]]
+                # (1 - |u|^2) * (1 - |v|^2)
+                denominator_square = ((1 - all_normalized_norms**2).reshape(-1,1)) @ (1 - all_normalized_norms**2).reshape(1,-1)
+                denominator = denominator_square[condensed_idx[0],condensed_idx[1]]
+                pairwise_dist = torch.acosh(1 + 2 * (numerator/denominator))
 
         all_fine = all_fine.tolist() # all unique fine classes in this batch
         
