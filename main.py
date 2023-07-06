@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader
 
 import numpy as np
 import pandas as pd
+import re
+
 
 from sklearn.metrics import roc_auc_score, silhouette_score
 from sklearn.mixture import GaussianMixture
@@ -213,7 +215,27 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             #         loss_ce = criterion_ce(output_fine, target_fine)
             # return representation, output_fine, loss_ce
 
-        for epoch in range(epochs):
+        # Check if a checkpoint exists at the start
+        checkpoint_filepath = ''
+        start_epoch = 0
+        max_epoch_num = -1
+        regex = re.compile(r'\d+')
+
+        for file in os.listdir(checkpoint_dir):
+            if file.endswith(".pth"):
+                epoch_num = int(regex.findall(file)[0])
+                if epoch_num > max_epoch_num:
+                    max_epoch_num = epoch_num
+                    checkpoint_filepath = os.path.join(checkpoint_dir, file)
+
+        if max_epoch_num != -1:
+            checkpoint = torch.load(checkpoint_filepath)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+        
+        for epoch in range(start_epoch, epochs):
             t_start = datetime.now() # record the time for each epoch
             model.train()
             # train_fine_accs = []
@@ -278,12 +300,24 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 # train_coarse_accs.extend(acc_coarse)
 
                 if idx % 100 == 1:
+                    if not CPCC:
+                        loss_cpcc = -1
                     if train_on_mid:
                         print(f"Train Loss: {loss}, Acc_mid: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
                     else:
                         print(f"Train Loss: {loss}, Acc_fine: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
             
             scheduler.step()
+
+            # Save the model every certain number of epochs
+            if epoch % 10 == 0:
+                checkpoint_filepath = os.path.join(checkpoint_dir, f"checkpoint_{epoch}.pth")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': loss,
+                    }, checkpoint_filepath)
             
             model.eval() 
             # test_fine_accs = []
@@ -808,10 +842,16 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
             layer_fine_map = train_dataset.mid_map
         elif level == 'coarse':
             train_classes, test_classes = train_dataset.coarse_names, test_dataset.coarse_names
-            layer_fine_map = train_dataset.coarse_map
+            if train_on_mid:
+                layer_fine_map = train_dataset.mid2coarse
+            else:
+                layer_fine_map = train_dataset.coarse_map
         elif level == 'coarsest':
             train_classes, test_classes = train_dataset.coarsest_names, test_dataset.coarsest_names
-            layer_fine_map = train_dataset.coarsest_map
+            if train_on_mid:
+                layer_fine_map = train_dataset.mid2coarsest
+            else:
+                layer_fine_map = train_dataset.coarsest_map
         
         assert (train_classes == test_classes), f'Zero shot invalid for {level}.'
         
@@ -844,13 +884,13 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
                     if 'MTL' in exp_name:
                         _, _, output_fine = model(data)
                     else:
-                        _, output_fine = model(data)
-                    prob_fine = F.softmax(output_fine,dim=1)
-                    pred_fine = prob_fine.argmax(dim=1, keepdim=False)
-                    if level == 'fine':
-                        pred_layer = pred_fine
+                        _, output_one = model(data)
+                    prob_one = F.softmax(output_one,dim=1)
+                    pred_one = prob_one.argmax(dim=1, keepdim=False)
+                    if (level == 'fine' and train_on_mid == 0) or (level == 'mid' and train_on_mid == 1):
+                        pred_layer = pred_one
                     else:
-                        prob_layer = get_layer_prob_from_fine(prob_fine, layer_fine_map)
+                        prob_layer = get_layer_prob_from_fine(prob_one, layer_fine_map)
                         pred_layer = prob_layer.argmax(dim=1, keepdim=False)
                     acc_layer = list(pred_layer.eq(target_layer).flatten().cpu().numpy())
                     layer_accs.extend(acc_layer)
@@ -878,6 +918,7 @@ def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_
     features = []
     targets_fine = []
     targets_coarse = []
+    model.eval()
     with torch.no_grad():
         for item in dataloader:
             data = item[0]
@@ -1140,15 +1181,21 @@ def main():
         train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting)
     elif task == '': # full
         if dataset_name == 'MNIST':
-            levels = ['coarse','mid','fine'] 
+            if train_on_mid:
+                levels = ['coarse','mid'] 
+            else:
+                levels = ['coarse','mid','fine'] 
         else:
-            levels = ['coarsest','coarse','mid','fine']
+            if train_on_mid:
+                levels = ['coarsest','coarse','mid']
+            else:
+                levels = ['coarsest','coarse','mid','fine']
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting)
     
     downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
     retrieve_final_metrics(test_loader, dataset_name)
-    if (dataset_name == 'CIFAR') and (split == 'full'):
-        ood_detection(seeds, dataset_name, exp_name)
+    # if (dataset_name == 'CIFAR') and (split == 'full'):
+    #     ood_detection(seeds, dataset_name, exp_name)
     
     return
 
@@ -1167,8 +1214,8 @@ if __name__ == '__main__':
     parser.add_argument("--cpcc_list", nargs='+', default=['coarse'], help='ex: --cpcc-list mid coarse, for 3 layer cpcc')
     parser.add_argument("--group", default=0, type=int, help='0/1, grouplasso')
     parser.add_argument("--case", type=int, help='Type of MNIST, 0/1')
-    parser.add_argument("--train_on_mid", default=0, type=int, help='Train on fine or mid layer, 0/1')
-    parser.add_argument("--emd", default=0, type=int, help='use Euclidean distance or EMD, 0/1')
+    parser.add_argument("--train_on_mid", required=True, default=0, type=int, help='Train on fine or mid layer, 0/1')
+    parser.add_argument("--emd", required=True, default=0, type=int, help='use Euclidean distance or EMD, 0/1')
 
     parser.add_argument("--lamb",type=float,default=1,help='strength of CPCC regularization')
     
@@ -1201,6 +1248,9 @@ if __name__ == '__main__':
     save_dir = root + '/' + timestamp 
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
+    checkpoint_dir = save_dir + '/checkpoint'
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("device: ", device)

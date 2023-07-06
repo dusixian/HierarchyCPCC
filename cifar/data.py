@@ -80,6 +80,13 @@ class HierarchyCIFAR(CIFAR100, Hierarchy):
                 mid2coarse_dict[mid] = coarse
 
         self.mid2coarse = np.array([v for k, v in sorted(mid2coarse_dict.items())])
+
+        mid2coarsest_dict = {}
+        for mid, coarsest in zip(self.mid_map, self.coarsest_map):
+            if mid not in mid2coarsest_dict:
+                mid2coarsest_dict[mid] = coarsest
+
+        self.mid2coarsest = np.array([v for k, v in sorted(mid2coarsest_dict.items())])
     
     def __getitem__(self, index: int):
         img, target_fine = self.data[index], int(self.targets[index])

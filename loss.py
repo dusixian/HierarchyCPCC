@@ -124,7 +124,6 @@ class CPCCLoss(nn.Module):
             combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
             dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
             pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
-            # print(pairwise_dist)
         
         else: # use Euclidean distance
             # get the center of all fine classes
