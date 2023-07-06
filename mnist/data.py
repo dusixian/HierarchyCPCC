@@ -28,8 +28,9 @@ class HierarchyMNIST(MNIST, Hierarchy):
         else:
             raise ValueError("Please specifiy --case")
         
-        self.mid_map = np.array([1,3,1,3,1,3,0,2,0,2])
+        self.mid_map = np.array([1,3,1,3,1,2,0,2,0,2])
         self.mid_names = ["even_greater","even_less","odd_greater","odd_less"]
+        self.mid2coarse = np.array([0,0,1,1])
         
         self.img_size = 28
         self.channel = 1

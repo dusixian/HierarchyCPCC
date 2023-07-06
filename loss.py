@@ -85,7 +85,7 @@ class CPCCLoss(nn.Module):
     '''
     CPCC as a mini-batch regularizer.
     '''
-    def __init__(self, dataset, is_emd, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
+    def __init__(self, dataset, is_emd, train_on_mid, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
         # make sure unique classes in layers[0] 
         super(CPCCLoss, self).__init__()
         
@@ -104,7 +104,9 @@ class CPCCLoss(nn.Module):
         self.fine2mid = dataset.mid_map
         self.fine2coarsest = dataset.coarsest_map
         self.distance_type = distance_type
+        self.mid2coarse = dataset.mid2coarse
         self.is_emd = is_emd
+        self.train_on_mid = train_on_mid
 
         # TODO: map = [(weight, class_id)], current setting weight == 1 everywhere
         # four levels always at the same height
@@ -122,6 +124,7 @@ class CPCCLoss(nn.Module):
             combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
             dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
             pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
+            # print(pairwise_dist)
         
         else: # use Euclidean distance
             # get the center of all fine classes
@@ -153,13 +156,16 @@ class CPCCLoss(nn.Module):
         all_fine = all_fine.tolist() # all unique fine classes in this batch
         
         if len(self.layers) == 1:
-            if self.layers[0] == 'coarsest':
-                fine2layer = self.fine2coarsest
-            elif self.layers[0] == 'mid':
-                fine2layer = self.fine2mid
-            elif self.layers[0] == 'coarse':
-                fine2layer = self.fine2coarse
-            tree_pairwise_dist = self.two_level_dT(all_fine, fine2layer, pairwise_dist.device)
+            if self.train_on_mid:
+                tree_pairwise_dist = self.two_level_dT(all_fine, self.mid2coarse, pairwise_dist.device)
+            else:
+                if self.layers[0] == 'coarsest':
+                    fine2layer = self.fine2coarsest
+                elif self.layers[0] == 'mid':
+                    fine2layer = self.fine2mid
+                elif self.layers[0] == 'coarse':
+                    fine2layer = self.fine2coarse
+                tree_pairwise_dist = self.two_level_dT(all_fine, fine2layer, pairwise_dist.device)
         elif len(self.layers) == 2:
             if self.layers[0] == 'mid' and self.layers[1] == 'coarse':
                 fine2layers = [self.fine2mid, self.fine2coarse]

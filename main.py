@@ -75,12 +75,19 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             dataset = train_loader.dataset.dataset
         else:
             dataset = train_loader.dataset
-        classes = dataset.fine_names
-        if 'MTL' in exp_name:
-            num_classes = [len(dataset.coarse_names), len(dataset.fine_names)]
+        if train_on_mid:
+            classes = dataset.mid_names
+            num_classes = [len(dataset.mid_names)]
         else:
-            num_classes = [len(dataset.fine_names)]
+            classes = dataset.fine_names
+        
+            if 'MTL' in exp_name:
+                num_classes = [len(dataset.coarse_names), len(dataset.fine_names)]
+            else:
+                num_classes = [len(dataset.fine_names)]
+        
         coarse_targets_map = dataset.coarse_map
+        mid_targets_map = dataset.mid_map
         num_train_batches = len(train_loader.dataset) // train_loader.batch_size + 1
         last_train_batch_size = len(train_loader.dataset)  % train_loader.batch_size
         num_test_batches = len(test_loader.dataset) // test_loader.batch_size + 1
@@ -107,6 +114,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                     "split":split,
                     "lamb":lamb,
                     "breeds_setting":breeds_setting,
+                    "train_on_mid": train_on_mid,
                     }
         if CPCC:
             init_config['cpcc_metric'] = cpcc_metric
@@ -137,7 +145,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             criterion_ce = nn.CrossEntropyLoss().to(device)
         else:
             criterion_ce = nn.CrossEntropyLoss().to(device)
-        criterion_cpcc = CPCCLoss(dataset, is_emd, cpcc_layers, cpcc_metric).to(device)
+        criterion_cpcc = CPCCLoss(dataset, is_emd, train_on_mid, cpcc_layers, cpcc_metric).to(device) 
         criterion_group = GroupLasso(dataset).to(device)
         
         with open(save_dir+'/config.json', 'w') as fp:
@@ -167,53 +175,61 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
         # ================= SETUP ENDS =======================
 
         def get_different_loss(exp_name : str, model : nn.Module, data : Tensor, 
-                        criterion_ce : nn.Module, target_fine : Tensor, target_coarse : Tensor, 
+                        criterion_ce : nn.Module, target_one : Tensor, target_coarse : Tensor, 
                         coarse_targets_map : list, idx : int, num_batches : int, 
                         last_batch_size : int, num_classes : int, 
                         all_soft_labels=None, lambda_s : float = None, criterion_quad : nn.Module = None) -> Tuple[Tensor, Tensor, Tensor]:
             '''
                 Helper to calculate non CPCC loss, also return representation and model raw output
             '''
-            if 'MTL' in exp_name:
-                representation, output_coarse, output_fine = model(data)
-                loss_ce_coarse = criterion_ce(output_fine, target_fine)
-                loss_ce_fine = criterion_ce(output_coarse, target_coarse)
-                loss_ce = loss_ce_coarse + loss_ce_fine
-            else:
-                representation, output_fine = model(data)
-                if 'sumloss' in exp_name:
-                    loss_ce_fine = criterion_ce(output_fine, target_fine)
-                    prob_fine = F.softmax(output_fine,dim=1)
-                    prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
-                    loss_ce_coarse = F.nll_loss(torch.log(prob_coarse), target_coarse)
-                    loss_ce = loss_ce_fine + loss_ce_coarse
-                elif 'soft' in exp_name:
-                    if idx == num_batches - 1:
-                        target_distribution = make_batch_soft_labels(all_soft_labels, target_fine, num_classes, last_batch_size, device)
-                    else:
-                        target_distribution = make_batch_soft_labels(all_soft_labels, target_fine, num_classes, batch_size, device)
-                    prob_fine = F.softmax(output_fine,dim=1)
-                    loss_ce = criterion_ce(prob_fine.log(), target_distribution)
-                elif 'quad' in exp_name:
-                    loss_quad = criterion_quad(F.normalize(representation, dim=-1), target_fine)
-                    loss_cee = criterion_ce(output_fine, target_fine)
-                    loss_ce = (1 - lambda_s) * loss_quad + lambda_s * loss_cee
-                else:
-                    loss_ce = criterion_ce(output_fine, target_fine)
-            return representation, output_fine, loss_ce
+            representation, output_one = model(data)
+            loss_ce = criterion_ce(output_one, target_one)
+            return representation, output_one, loss_ce
+            # if 'MTL' in exp_name:
+            #     representation, output_coarse, output_fine = model(data)
+            #     loss_ce_coarse = criterion_ce(output_fine, target_fine)
+            #     loss_ce_fine = criterion_ce(output_coarse, target_coarse)
+            #     loss_ce = loss_ce_coarse + loss_ce_fine
+            # else:
+            #     representation, output_fine = model(data)
+            #     if 'sumloss' in exp_name:
+            #         loss_ce_fine = criterion_ce(output_fine, target_fine)
+            #         prob_fine = F.softmax(output_fine,dim=1)
+            #         prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
+            #         loss_ce_coarse = F.nll_loss(torch.log(prob_coarse), target_coarse)
+            #         loss_ce = loss_ce_fine + loss_ce_coarse
+            #     elif 'soft' in exp_name:
+            #         if idx == num_batches - 1:
+            #             target_distribution = make_batch_soft_labels(all_soft_labels, target_fine, num_classes, last_batch_size, device)
+            #         else:
+            #             target_distribution = make_batch_soft_labels(all_soft_labels, target_fine, num_classes, batch_size, device)
+            #         prob_fine = F.softmax(output_fine,dim=1)
+            #         loss_ce = criterion_ce(prob_fine.log(), target_distribution)
+            #     elif 'quad' in exp_name:
+            #         loss_quad = criterion_quad(F.normalize(representation, dim=-1), target_fine)
+            #         loss_cee = criterion_ce(output_fine, target_fine)
+            #         loss_ce = (1 - lambda_s) * loss_quad + lambda_s * loss_cee
+            #     else:
+            #         loss_ce = criterion_ce(output_fine, target_fine)
+            # return representation, output_fine, loss_ce
 
         for epoch in range(epochs):
             t_start = datetime.now() # record the time for each epoch
             model.train()
-            train_fine_accs = []
+            # train_fine_accs = []
+            train_one_accs = []
             train_coarse_accs = []
             train_losses_ce = []
             train_losses_cpcc = []
             train_losses_group = []
             
-            for idx, (data, _, target_coarse, _, target_fine)  in enumerate(train_loader):
+            for idx, (data, _, target_coarse, target_mid, target_fine) in enumerate(train_loader):
                 data = data.to(device)
-                target_fine = target_fine.to(device)
+                # target_fine = target_fine.to(device)
+                if train_on_mid:
+                    target_one = target_mid.to(device)
+                else:
+                    target_one = target_fine.to(device)
                 target_coarse = target_coarse.to(device)
 
                 optimizer.zero_grad()
@@ -229,12 +245,15 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                                             last_train_batch_size, num_classes[-1], 
                                             lambda_s=lambda_s, criterion_quad=criterion_quad)
                 else:
-                    representation, output_fine, loss_ce = get_different_loss(exp_name, model, data, criterion_ce, target_fine, target_coarse, 
+                    # representation, output_fine, loss_ce = get_different_loss(exp_name, model, data, criterion_ce, target_fine, target_coarse, 
+                    #                         coarse_targets_map, idx, num_train_batches, 
+                    #                         last_train_batch_size, num_classes[-1])
+                    representation, output_one, loss_ce = get_different_loss(exp_name, model, data, criterion_ce, target_one, target_coarse, 
                                             coarse_targets_map, idx, num_train_batches, 
                                             last_train_batch_size, num_classes[-1])
                 
                 if CPCC:
-                    loss_cpcc = lamb * criterion_cpcc(representation, target_fine)
+                    loss_cpcc = lamb * criterion_cpcc(representation, target_one)
                     loss = loss_ce + loss_cpcc
                     train_losses_cpcc.append(loss_cpcc)
                 elif group:
@@ -248,33 +267,41 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 loss.backward()
                 optimizer.step()
             
-                prob_fine = F.softmax(output_fine,dim=1)
-                pred_fine = prob_fine.argmax(dim=1)
-                acc_fine = pred_fine.eq(target_fine).flatten().tolist()
-                train_fine_accs.extend(acc_fine)
+                prob_one = F.softmax(output_one,dim=1)
+                pred_one = prob_one.argmax(dim=1)
+                acc_one = pred_one.eq(target_one).flatten().tolist()
+                train_one_accs.extend(acc_one)
 
-                prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
-                pred_coarse = prob_coarse.argmax(dim=1)
-                acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
-                train_coarse_accs.extend(acc_coarse)
+                # prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
+                # pred_coarse = prob_coarse.argmax(dim=1)
+                # acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
+                # train_coarse_accs.extend(acc_coarse)
 
                 if idx % 100 == 1:
-                    print(f"Train Loss: {loss}, Acc_fine: {sum(train_fine_accs)/len(train_fine_accs)}, loss_cpcc: {loss_cpcc}")
+                    if train_on_mid:
+                        print(f"Train Loss: {loss}, Acc_mid: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
+                    else:
+                        print(f"Train Loss: {loss}, Acc_fine: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
             
             scheduler.step()
             
             model.eval() 
-            test_fine_accs = []
+            # test_fine_accs = []
+            test_one_accs = []
             test_coarse_accs = []
             test_losses_ce = []
             test_losses_cpcc = []
             test_losses_group = []
             
             with torch.no_grad():
-                for idx, (data, _, target_coarse, _, target_fine) in enumerate(test_loader):
+                for idx, (data, _, target_coarse, target_mid, target_fine) in enumerate(test_loader):
                     data = data.to(device)
                     target_coarse = target_coarse.to(device)
-                    target_fine = target_fine.to(device)
+                    # target_fine = target_fine.to(device)
+                    if train_on_mid:
+                        target_one = target_mid.to(device)
+                    else:
+                        target_one = target_fine.to(device)
                     
                     if 'soft' in exp_name:
                         representation, output_fine, loss_ce = get_different_loss(exp_name, model, data, criterion_ce, target_fine, target_coarse, 
@@ -287,12 +314,12 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                                                 last_test_batch_size, num_classes[-1], 
                                                 lambda_s=lambda_s, criterion_quad=criterion_quad)
                     else:
-                        representation, output_fine, loss_ce = get_different_loss(exp_name, model, data, criterion_ce, target_fine, target_coarse, 
+                        representation, output_one, loss_ce = get_different_loss(exp_name, model, data, criterion_ce, target_one, target_coarse, 
                                                 coarse_targets_map, idx, num_test_batches, 
                                                 last_test_batch_size, num_classes[-1])
                     
                     if CPCC:
-                        loss_cpcc = lamb * criterion_cpcc(representation, target_fine)
+                        loss_cpcc = lamb * criterion_cpcc(representation, target_one)
                         loss = loss_ce + loss_cpcc
                         test_losses_cpcc.append(loss_cpcc)
                     elif group:
@@ -303,24 +330,24 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                         loss = loss_ce
                     test_losses_ce.append(loss_ce)
                     
-                    prob_fine = F.softmax(output_fine,dim=1)
-                    pred_fine = prob_fine.argmax(dim=1)
-                    acc_fine = pred_fine.eq(target_fine).flatten().tolist()
-                    test_fine_accs.extend(acc_fine)
+                    prob_one = F.softmax(output_one,dim=1)
+                    pred_one = prob_one.argmax(dim=1)
+                    acc_one = pred_one.eq(target_one).flatten().tolist()
+                    test_one_accs.extend(acc_one)
 
-                    prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
-                    pred_coarse = prob_coarse.argmax(dim=1)
-                    acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
-                    test_coarse_accs.extend(acc_coarse)
+                    # prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
+                    # pred_coarse = prob_coarse.argmax(dim=1)
+                    # acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
+                    # test_coarse_accs.extend(acc_coarse)
             
             t_end = datetime.now()
             t_delta = (t_end-t_start).total_seconds()
-            print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_fine: {sum(test_fine_accs)/len(test_fine_accs)}")
+            print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_one: {sum(test_one_accs)/len(test_one_accs)}")
             print(f"Epoch {epoch} takes {t_delta} sec.")
 
-            log_dict = {"train_fine_acc":sum(train_fine_accs)/len(train_fine_accs),
+            log_dict = {"train_one_acc":sum(train_one_accs)/len(train_one_accs),
                         "train_losses_ce":sum(train_losses_ce)/len(train_losses_ce),
-                        "val_fine_acc":sum(test_fine_accs)/len(test_fine_accs),
+                        "val_one_acc":sum(test_one_accs)/len(test_one_accs),
                         "val_losses_ce":sum(test_losses_ce)/len(test_losses_ce),
                     }
             
@@ -391,7 +418,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
         config = {**init_config, **optim_config, **scheduler_config}  
         
         criterion_ce = nn.CrossEntropyLoss().to(device)
-        criterion_cpcc = CPCCLoss(dataset, is_emd, cpcc_layers, cpcc_metric).to(device)
+        criterion_cpcc = CPCCLoss(dataset, is_emd, train_on_mid, cpcc_layers, cpcc_metric).to(device)
 
         with open(save_dir+'/config.json', 'w') as fp:
             json.dump(config, fp, sort_keys=True, indent=4)

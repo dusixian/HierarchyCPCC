@@ -73,6 +73,13 @@ class HierarchyCIFAR(CIFAR100, Hierarchy):
             self.coarsest_map[i_group_indices] = i // 2
             self.coarsest_names.append((self.coarse_names[i] + "_" + self.coarse_names[i+1]))
         self.coarsest_map = self.coarsest_map.astype(int)
+
+        mid2coarse_dict = {}
+        for mid, coarse in zip(self.mid_map, self.coarse_map):
+            if mid not in mid2coarse_dict:
+                mid2coarse_dict[mid] = coarse
+
+        self.mid2coarse = np.array([v for k, v in sorted(mid2coarse_dict.items())])
     
     def __getitem__(self, index: int):
         img, target_fine = self.data[index], int(self.targets[index])
