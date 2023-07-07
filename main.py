@@ -859,7 +859,10 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
             if 'MTL' in exp_name:
                 model = init_model(dataset_name, [len(train_dataset.coarse_names),len(train_dataset.fine_names)], device)
             else:
-                model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
+                if train_on_mid:
+                    model = init_model(dataset_name, [len(train_dataset.mid_names)], device)
+                else:
+                    model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
             model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
             model.eval()
             
