@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
 import re
+import ot
 
 
 from sklearn.metrics import roc_auc_score, silhouette_score
