@@ -9,12 +9,14 @@ from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
 import re
+import ot
 
 
 from sklearn.metrics import roc_auc_score, silhouette_score
 from sklearn.mixture import GaussianMixture
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import pdist
+from scipy.stats.mstats import pearsonr
 
 # Official implementation from: https://github.com/fiveai/making-better-mistakes
 from better_mistakes.model.losses import HierarchicalCrossEntropyLoss
@@ -222,7 +224,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
         regex = re.compile(r'\d+')
 
         for file in os.listdir(checkpoint_dir):
-            if file.endswith(".pth"):
+            if file.endswith(f"{seed}.pth"):
                 epoch_num = int(regex.findall(file)[0])
                 if epoch_num > max_epoch_num:
                     max_epoch_num = epoch_num
@@ -311,7 +313,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
 
             # Save the model every certain number of epochs
             if epoch % 10 == 0:
-                checkpoint_filepath = os.path.join(checkpoint_dir, f"checkpoint_{epoch}.pth")
+                checkpoint_filepath = os.path.join(checkpoint_dir, f"checkpoint_{epoch}_{seed}.pth")
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -910,6 +912,10 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
 
 def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_name : str, seed : int):
     dataset = dataloader.dataset
+    # if train_on_mid:
+    #     model = init_model(dataset_name, [len(dataset.mid_names)], device)
+    # else:  
+    #     model = init_model(dataset_name, [len(dataset.fine_names)], device)
     model = init_model(dataset_name, [len(dataset.fine_names)], device)
 
     model_dict = model.state_dict()
@@ -919,27 +925,35 @@ def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_
     model.module.fc = nn.Identity()
 
     features = []
-    targets_fine = []
+    probs = []
+    targets_one = []
     targets_coarse = []
     model.eval()
     with torch.no_grad():
         for item in dataloader:
             data = item[0]
-            target_fine = item[-1]
+            target_one = item[-1]
+            # if train_on_mid:
+            #     target_one = item[-2]
+            # else:
+            #     target_one = item[-1]
             data = data.to(device)
-            target_fine = target_fine.to(device)
-            feature = model(data)[0]
+            target_one = target_one.to(device)
+            feature, output = model(data)
+            prob_one = F.softmax(output,dim=1)
+            probs.append(prob_one.cpu().detach().numpy())
             features.append(feature.cpu().detach().numpy())
-            targets_fine.append(target_fine.cpu().detach().numpy())
+            targets_one.append(target_one.cpu().detach().numpy())
             if len(item) == 5:
                 target_coarse = item[2]
                 target_coarse = target_coarse.to(device)
                 targets_coarse.append(target_coarse.cpu().detach().numpy())
     features = np.concatenate(features,axis=0)
-    targets_fine = np.concatenate(targets_fine,axis=0)
+    targets_one = np.concatenate(targets_one,axis=0)
+    probs = np.concatenate(probs,axis=0)
     if len(targets_coarse) > 0:
         targets_coarse = np.concatenate(targets_coarse,axis=0)  
-    return (features, targets_fine, targets_coarse)
+    return (features, probs, targets_one, targets_coarse)
 
 def ood_detection(seeds : int, dataset_name : str, exp_name : str):
     '''
@@ -955,9 +969,9 @@ def ood_detection(seeds : int, dataset_name : str, exp_name : str):
     out = {}
     for seed in range(seeds):
         # compute features
-        in_train_features, in_train_labels, _ = feature_extractor(in_train_loader, 'full', '', dataset_name, seed)
-        in_test_features, _, _ = feature_extractor(in_test_loader, 'full', '', dataset_name, seed)
-        out_test_features, _, _ = feature_extractor(out_test_loader, 'full', '', dataset_name, seed)
+        in_train_features, _, in_train_labels, _ = feature_extractor(in_train_loader, 'full', '', dataset_name, seed)
+        in_test_features, _, _, _ = feature_extractor(in_test_loader, 'full', '', dataset_name, seed)
+        out_test_features, _, _, _ = feature_extractor(out_test_loader, 'full', '', dataset_name, seed)
         print("Features successfully loaded.")
 
         features_outlier = np.concatenate([out_test_features, in_test_features], axis=0)
@@ -1044,6 +1058,64 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             json.dump(out, fp, indent=4)
         return out
 
+    def plot_pearM(probL, targets_fineL, dataset):
+        coarse_targets_map = dataset.coarse_map
+        finecls2names = dataset.fine_names
+        x_axis = []
+        for i in range(len(set(coarse_targets_map))):
+            x_axis.extend(list(np.where(coarse_targets_map == i)[0]))
+        d = dict(zip(range(len(finecls2names)),x_axis))
+
+        fine_named_axis = [finecls2names[cls] for cls in x_axis]
+        rows,cols = len(finecls2names),len(finecls2names)
+
+        for i, (prob, targets_fine) in enumerate(zip(probL, targets_fineL)):
+            fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(80, 80))
+            seed = i
+            if os.path.exists(save_dir+f"/pearM_seed{seed}.npy"):
+                M = np.load(save_dir+f"/pearM_seed{seed}.npy")
+            else:
+                df = pd.concat([pd.DataFrame(prob), pd.Series(targets_fine, name='target')], axis = 1)
+                mean_df = df.groupby(['target']).mean()
+                M = np.zeros((rows,cols))
+                for r in range(rows):
+                    for c in range(cols):
+                        if r == c:
+                            M[r,c] = 0
+                        else:
+                            vr = np.array(mean_df.iloc[d[r],:])
+                            vc = np.array(mean_df.iloc[d[c],:])
+                            M[r,c] = pearsonr(vr, vc)[0]  # Use Pearson correlation
+            s = sns.heatmap(M, annot=True, fmt=".3g", cmap="YlGnBu", ax=axes, cbar=False)
+            s.set_xticklabels(fine_named_axis,ha='center',rotation=45)
+            s.set_yticklabels(fine_named_axis,rotation=0)
+            s.tick_params(left=True, right=True, bottom=True, top=True, labelright=True, labeltop=True)
+            if not(os.path.exists(save_dir+f"/pearM_seed{seed}.npy")):
+                np.save(save_dir+f"/pearM_seed{seed}.npy",M)
+            
+            plt.savefig(save_dir+f"/pearM_seed{seed}.pdf")
+            plt.clf()
+        return
+        # coarse_targets_map = dataset.coarse_map
+        # finecls2names = dataset.fine_names
+        
+        # num_samples = len(targets_fineL)
+
+        # index_label_pairs = [(i, targets_fineL[i], coarse_targets_map[targets_fineL[i]]) for i in range(num_samples)]
+        # index_label_pairs.sort(key=lambda x: (x[2], x[1]))
+        # sorted_preds = np.array([probL[i] for i, _, _ in index_label_pairs])
+
+        # correlation_matrix = np.zeros((num_samples, num_samples))
+
+        # for i in range(num_samples):
+        #     for j in range(num_samples):
+        #         if i != j:
+        #             correlation_matrix[i][j] = pearsonr(sorted_preds[i], sorted_preds[j])[0]
+
+        # plt.imshow(correlation_matrix, cmap='hot', interpolation='nearest')
+        # plt.colorbar()
+        # plt.show()
+    
     def plot_distM(dataL, targets_fineL, dataset): 
         '''
             Plot distance matrix for CIFAR. Coarse classes are grouped together,
@@ -1129,11 +1201,12 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             plt.savefig(save_dir+f"/TSNE_seed{seed}.pdf")
             plt.clf()
     
-    dataL, targets_fineL, targets_coarseL = [],[],[]
+    dataL, probL, targets_fineL, targets_coarseL = [],[],[],[]
     for seed in range(seeds):
-        data, targets_fine, targets_coarse = feature_extractor(test_loader, split, task, dataset_name, seed)
+        data, prob, targets_one, targets_coarse = feature_extractor(test_loader, split, task, dataset_name, seed)
         dataL.append(data)
-        targets_fineL.append(targets_fine)
+        probL.append(prob)
+        targets_fineL.append(targets_one)
         targets_coarseL.append(targets_coarse)
     dataset = test_loader.dataset 
     out_cpcc = fullCPCC(dataL, targets_fineL, dataset.coarse_map)
@@ -1142,6 +1215,7 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
     if (split == 'full') and (dataset_name == 'CIFAR'):
         plot_distM(dataL, targets_fineL, dataset)
         plot_TSNE(dataL, targets_coarseL, dataset)
+    plot_pearM(probL, targets_fineL, dataset)
     print(out_cpcc, out_silhouette)
     return out_cpcc, out_silhouette
 
