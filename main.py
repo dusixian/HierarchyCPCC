@@ -912,11 +912,11 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
 
 def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_name : str, seed : int):
     dataset = dataloader.dataset
-    # if train_on_mid:
-    #     model = init_model(dataset_name, [len(dataset.mid_names)], device)
-    # else:  
-    #     model = init_model(dataset_name, [len(dataset.fine_names)], device)
-    model = init_model(dataset_name, [len(dataset.fine_names)], device)
+    if train_on_mid:
+        model = init_model(dataset_name, [len(dataset.mid_names)], device)
+    else:  
+        model = init_model(dataset_name, [len(dataset.fine_names)], device)
+    # model = init_model(dataset_name, [len(dataset.fine_names)], device)
 
     model_dict = model.state_dict()
     ckpt_dict = {k: v for k, v in torch.load(save_dir+f"/{split}{task}_seed{seed}.pth").items() if (k in model_dict) and ('fc' not in k)}
@@ -932,11 +932,11 @@ def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_
     with torch.no_grad():
         for item in dataloader:
             data = item[0]
-            target_one = item[-1]
-            # if train_on_mid:
-            #     target_one = item[-2]
-            # else:
-            #     target_one = item[-1]
+            # target_one = item[-1]
+            if train_on_mid:
+                target_one = item[-2]
+            else:
+                target_one = item[-1]
             data = data.to(device)
             target_one = target_one.to(device)
             feature, output = model(data)
@@ -1059,12 +1059,18 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
         return out
 
     def plot_pearM(probL, targets_fineL, dataset):
-        coarse_targets_map = dataset.coarse_map
-        finecls2names = dataset.fine_names
+        # coarse_targets_map = dataset.coarse_map
+        if train_on_mid:
+            coarse_targets_map = dataset.mid2coarse
+            finecls2names = [str(i) for i in range(len(coarse_targets_map))]
+        else:
+            coarse_targets_map = dataset.coarse_map
+            finecls2names = dataset.fine_names
+
         x_axis = []
         for i in range(len(set(coarse_targets_map))):
             x_axis.extend(list(np.where(coarse_targets_map == i)[0]))
-        d = dict(zip(range(len(finecls2names)),x_axis))
+        d = dict(zip(range(len(coarse_targets_map)),x_axis))
 
         fine_named_axis = [finecls2names[cls] for cls in x_axis]
         rows,cols = len(finecls2names),len(finecls2names)
@@ -1121,8 +1127,13 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             Plot distance matrix for CIFAR. Coarse classes are grouped together,
             so that groups of distance values on the diagonal will be smaller.
         '''
-        coarse_targets_map = dataset.coarse_map
-        finecls2names = dataset.fine_names
+        if train_on_mid:
+            coarse_targets_map = dataset.mid2coarse
+            finecls2names = [str(i) for i in range(len(coarse_targets_map))]
+        else:
+            coarse_targets_map = dataset.coarse_map
+            finecls2names = dataset.fine_names
+
         x_axis = []
         for i in range(len(set(coarse_targets_map))):
             x_axis.extend(list(np.where(coarse_targets_map == i)[0]))
@@ -1201,23 +1212,24 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             plt.savefig(save_dir+f"/TSNE_seed{seed}.pdf")
             plt.clf()
     
-    dataL, probL, targets_fineL, targets_coarseL = [],[],[],[]
+    dataL, probL, targets_oneL, targets_coarseL = [],[],[],[]
     for seed in range(seeds):
         data, prob, targets_one, targets_coarse = feature_extractor(test_loader, split, task, dataset_name, seed)
         dataL.append(data)
         probL.append(prob)
-        targets_fineL.append(targets_one)
+        targets_oneL.append(targets_one)
         targets_coarseL.append(targets_coarse)
     dataset = test_loader.dataset 
-    out_cpcc = fullCPCC(dataL, targets_fineL, dataset.coarse_map)
-    out_silhouette = silhouette(dataL, targets_coarseL)
+    # out_cpcc = fullCPCC(dataL, targets_fineL, dataset.coarse_map)
+    # out_silhouette = silhouette(dataL, targets_coarseL)
     
     if (split == 'full') and (dataset_name == 'CIFAR'):
-        plot_distM(dataL, targets_fineL, dataset)
+        plot_distM(dataL, targets_oneL, dataset)
         plot_TSNE(dataL, targets_coarseL, dataset)
-    plot_pearM(probL, targets_fineL, dataset)
-    print(out_cpcc, out_silhouette)
-    return out_cpcc, out_silhouette
+    plot_pearM(probL, targets_oneL, dataset)
+    # print(out_cpcc, out_silhouette)
+    # return out_cpcc, out_silhouette
+    return
 
 def main():
     
