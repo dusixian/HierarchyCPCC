@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import re
 import ot
+from itertools import combinations
 
 
 from sklearn.metrics import roc_auc_score, silhouette_score
@@ -17,6 +18,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import pdist
 from scipy.stats.mstats import pearsonr
+from scipy.spatial.distance import cdist
 
 # Official implementation from: https://github.com/fiveai/making-better-mistakes
 from better_mistakes.model.losses import HierarchicalCrossEntropyLoss
@@ -119,6 +121,9 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                     "lamb":lamb,
                     "breeds_setting":breeds_setting,
                     "train_on_mid": train_on_mid,
+                    "is_emd": is_emd,
+                    "reg": reg,
+                    "numItermax": numItermax,
                     }
         if CPCC:
             init_config['cpcc_metric'] = cpcc_metric
@@ -149,7 +154,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             criterion_ce = nn.CrossEntropyLoss().to(device)
         else:
             criterion_ce = nn.CrossEntropyLoss().to(device)
-        criterion_cpcc = CPCCLoss(dataset, is_emd, train_on_mid, cpcc_layers, cpcc_metric).to(device) 
+        criterion_cpcc = CPCCLoss(dataset, is_emd, train_on_mid, reg, numItermax, cpcc_layers, cpcc_metric).to(device) 
         criterion_group = GroupLasso(dataset).to(device)
         
         with open(save_dir+'/config.json', 'w') as fp:
@@ -1018,16 +1023,25 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
         for (data, targets_fine) in zip(dataL, targets_fineL):
             df_fine = pd.concat([pd.DataFrame(data), pd.Series(targets_fine, name='target')], axis = 1)
             mean_df_fine = df_fine.groupby(['target']).mean()
-
+            all_fine = np.unique(targets_fine)
+            
             acc_tree_dist = [1 if fine2coarse[i] == fine2coarse[j] else 2 for i in range(len(fine2coarse)) for j in range(i+1,len(fine2coarse))]
             mean_tree_dist = np.average(acc_tree_dist)
 
-            if cpcc_metric == 'l2':
-                acc_l2_dist = pdist(np.array(mean_df_fine),metric='euclidean') 
-            elif cpcc_metric == 'l1':
-                acc_l2_dist = pdist(np.array(mean_df_fine),metric='cityblock') 
-            elif cpcc_metric == 'poincare':
-                acc_l2_dist = pdist(np.array(mean_df_fine),metric=poincareFn)
+            all_pairwise = cdist(data, data)
+            target_indices = [np.where(targets_fine == fine)[0] for fine in all_fine]
+            combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
+            dist_matrices = [all_pairwise[np.ix_(pair[0],pair[1])] for pair in combidx]
+
+            acc_l2_dist = np.stack([ot.emd2(np.array([]), np.array([]), M) for M in dist_matrices])
+            
+
+            # if cpcc_metric == 'l2':
+            #     acc_l2_dist = pdist(np.array(mean_df_fine),metric='euclidean') 
+            # elif cpcc_metric == 'l1':
+            #     acc_l2_dist = pdist(np.array(mean_df_fine),metric='cityblock') 
+            # elif cpcc_metric == 'poincare':
+            #     acc_l2_dist = pdist(np.array(mean_df_fine),metric=poincareFn)
             mean_l2_dist = np.average(acc_l2_dist)
 
             numerator = np.dot((acc_l2_dist - mean_l2_dist),(acc_tree_dist - mean_tree_dist))
@@ -1220,16 +1234,18 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
         targets_oneL.append(targets_one)
         targets_coarseL.append(targets_coarse)
     dataset = test_loader.dataset 
-    # out_cpcc = fullCPCC(dataL, targets_fineL, dataset.coarse_map)
-    # out_silhouette = silhouette(dataL, targets_coarseL)
+    if train_on_mid:
+        out_cpcc = fullCPCC(dataL, targets_oneL, dataset.mid2coarse)
+    else:
+        out_cpcc = fullCPCC(dataL, targets_oneL, dataset.coarse_map)
+    out_silhouette = silhouette(dataL, targets_coarseL)
     
-    if (split == 'full') and (dataset_name == 'CIFAR'):
-        plot_distM(dataL, targets_oneL, dataset)
-        plot_TSNE(dataL, targets_coarseL, dataset)
-    plot_pearM(probL, targets_oneL, dataset)
-    # print(out_cpcc, out_silhouette)
-    # return out_cpcc, out_silhouette
-    return
+    # if (split == 'full') and (dataset_name == 'CIFAR'):
+    #     plot_distM(dataL, targets_oneL, dataset)
+    #     plot_TSNE(dataL, targets_coarseL, dataset)
+    # plot_pearM(probL, targets_oneL, dataset)
+    print(out_cpcc, out_silhouette)
+    return out_cpcc, out_silhouette
 
 def main():
     
@@ -1281,7 +1297,7 @@ def main():
                 levels = ['coarsest','coarse','mid','fine']
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting)
     
-    downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
+    # downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
     retrieve_final_metrics(test_loader, dataset_name)
     # if (dataset_name == 'CIFAR') and (split == 'full'):
     #     ood_detection(seeds, dataset_name, exp_name)
@@ -1303,8 +1319,11 @@ if __name__ == '__main__':
     parser.add_argument("--cpcc_list", nargs='+', default=['coarse'], help='ex: --cpcc-list mid coarse, for 3 layer cpcc')
     parser.add_argument("--group", default=0, type=int, help='0/1, grouplasso')
     parser.add_argument("--case", type=int, help='Type of MNIST, 0/1')
+
     parser.add_argument("--train_on_mid", required=True, default=0, type=int, help='Train on fine or mid layer, 0/1')
-    parser.add_argument("--emd", required=True, default=0, type=int, help='use Euclidean distance or EMD, 0/1')
+    parser.add_argument("--emd", required=True, default=0, type=int, help='0-Euclidean distance, 1-EMD, 2-Sinkhorn, 3-SmoothOT')
+    parser.add_argument("--reg", required=False, default=1, type=int, help='the regulization param of Sinkhorn or SmoothOT')
+    parser.add_argument("--numItermax", required=False, default=10000, type=int, help='numIterMax to run Sinkhorn or SmoothOT')
 
     parser.add_argument("--lamb",type=float,default=1,help='strength of CPCC regularization')
     
@@ -1325,6 +1344,8 @@ if __name__ == '__main__':
     group = args.group
     is_emd = args.emd
     train_on_mid = args.train_on_mid
+    reg = args.reg
+    numItermax = args.numItermax
 
     num_workers = args.num_workers
     batch_size = args.batch_size
@@ -1345,7 +1366,8 @@ if __name__ == '__main__':
     print("device: ", device)
 
     if dataset_name == 'BREEDS':
-        for breeds_setting in ['living17','entity13','entity30','nonliving26']:
+        # for breeds_setting in ['living17','entity13','entity30','nonliving26']:
+        for breeds_setting in ['living17']:
             save_dir = root + '/' + timestamp + '/' + breeds_setting
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
