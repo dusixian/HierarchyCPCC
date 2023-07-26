@@ -69,6 +69,20 @@ class HierarchyBREEDS(ImageFolder, Hierarchy):
         self.coarse_map = np.array(coarse_map)
         self.coarsest_map = np.array(coarsest_map)
         self.targets = all_fine_targets
+
+        mid2coarse_dict = {}
+        for mid, coarse in zip(self.mid_map, self.coarse_map):
+            if mid not in mid2coarse_dict:
+                mid2coarse_dict[mid] = coarse
+
+        self.mid2coarse = np.array([v for k, v in sorted(mid2coarse_dict.items())])
+
+        mid2coarsest_dict = {}
+        for mid, coarsest in zip(self.mid_map, self.coarsest_map):
+            if mid not in mid2coarsest_dict:
+                mid2coarsest_dict[mid] = coarsest
+
+        self.mid2coarsest = np.array([v for k, v in sorted(mid2coarsest_dict.items())])
     
     def __getitem__(self, index: int):
         # let get item be consistent with other datasets
@@ -86,7 +100,7 @@ class HierarchyBREEDS(ImageFolder, Hierarchy):
 
 def make_dataloader(num_workers : int, batch_size : int, task : str, breeds_setting: str, 
                     info_dir : str = './breeds/imagenet_class_hierarchy/modified', 
-                    data_dir : str = '/data/common/ILSVRC2012') -> Tuple[DataLoader, DataLoader]:
+                    data_dir : str = '/data/common/ImageNet/ILSVRC12012') -> Tuple[DataLoader, DataLoader]:
     '''
     Args:
         breeds_setting : living17/entity13/entity30/nonliving26
@@ -175,6 +189,7 @@ def make_dataloader(num_workers : int, batch_size : int, task : str, breeds_sett
 
         if only_val:
             return None, test_loader
+
 
         return train_loader, test_loader
 
