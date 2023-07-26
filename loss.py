@@ -9,39 +9,27 @@ from itertools import combinations
 import random
 from typing import *
 
-# class EMDFunction(torch.autograd.Function):
-#     @staticmethod
-#     def forward(ctx, x, y):
-#         x_np = x.detach().cpu().numpy().astype(np.float32)
-#         y_np = y.detach().cpu().numpy().astype(np.float32)
 
-#         # Create the weights for x and y
-#         x_weights = np.full((x_np.shape[0], 1), 1 / x_np.shape[0]).astype(np.float32)
-#         y_weights = np.full((y_np.shape[0], 1), 1 / y_np.shape[0]).astype(np.float32)
+class SK(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, M, reg, numItermax):
+        m, n = M.shape
+        M_np = M.detach().cpu().numpy()
+        a = np.full(m, 1 / m)
+        b = np.full(n, 1 / n)
+        flow = torch.tensor(ot.sinkhorn(a, b, M_np, reg=reg, numItermax=numItermax)).to(M.device)
+        emd = (M * flow).sum()
 
-#         # Add the weights as the first column in x and y
-#         x_np = np.hstack((x_weights, x_np))
-#         y_np = np.hstack((y_weights, y_np))
-        
-#         emd, _, flow = cv2.EMD(x_np, y_np, cv2.DIST_L2)
-        
-#         # Save variables needed for backward in ctx
-#         ctx.save_for_backward(torch.tensor(flow), x.float(), y.float())
-        
-#         return torch.tensor(emd, dtype=x.dtype, device=x.device)
+        ctx.save_for_backward(flow)
+
+        return emd
     
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         flow, x, y = ctx.saved_tensors
-#         grad_x = torch.zeros_like(x)
-#         grad_y = torch.zeros_like(y)
-
-#         for i in range(flow.size(0)):
-#             for j in range(flow.size(1)):
-#                 grad_x[i] += 2.0 * (x[i] - y[j]) * flow[i, j] * grad_output
-#                 grad_y[j] += -2.0 * (x[i] - y[j]) * flow[i, j] * grad_output
-
-#         return grad_x/10, grad_y/10
+    @staticmethod
+    def backward(ctx, grad_output):
+        flow, = ctx.saved_tensors
+        grad_cost_matrix = flow * grad_output
+        
+        return grad_cost_matrix, None, None
     
 class EMDFunction(torch.autograd.Function):
     @staticmethod
@@ -81,11 +69,59 @@ class OTEMDFunction(torch.autograd.Function):
         grad_cost_matrix = flow * grad_output
         return grad_cost_matrix
 
+class SmoothOT(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, M, semi=True, regul=SquaredL2(gamma=1.0), max_iter=1000):
+        # Convert torch tensor to numpy array
+        M_np = M.detach().cpu().numpy()
+        
+        # Compute the weight vectors a and b
+        m, n = M.shape
+        a = np.full(m, 1 / m)
+        b = np.full(n, 1 / n)
+        
+        if semi:
+            alpha = solve_semi_dual(a, b, M_np, regul, max_iter=max_iter)
+            T = get_plan_from_semi_dual(alpha, b, M_np, regul)
+        else:
+            alpha, beta = solve_dual(a, b, M_np, regul, max_iter=max_iter)
+            T = get_plan_from_dual(alpha, beta, M_np, regul)
+
+        # Save T for backward pass
+        T_tensor = torch.from_numpy(T).to(M.device)
+        ctx.save_for_backward(T_tensor)
+
+        return torch.sum(T_tensor * M) + torch.tensor(regul.Omega(T)).to(M.device)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Retrieve T
+        T, = ctx.saved_tensors
+        return T * grad_output, None, None, None
+
+def smooth(M, reg):
+    M_np = M.detach().cpu().numpy()
+        
+    # Compute the weight vectors a and b
+    m, n = M.shape
+    a = np.full(m, 1 / m)
+    b = np.full(n, 1 / n)
+
+    return torch.sum(torch.tensor(ot.smooth.smooth_ot_dual(a, b, M_np, reg) * M_np))
+
+def sinkhorn(M, reg, numItermax):
+    m, n = M.shape
+    M_np = M.detach().cpu().numpy()
+    a = np.full(m, 1 / m)
+    b = np.full(n, 1 / n)
+
+    return torch.tensor(ot.sinkhorn2(a, b, M_np, reg=reg, numItermax=numItermax))
+
 class CPCCLoss(nn.Module):
     '''
     CPCC as a mini-batch regularizer.
     '''
-    def __init__(self, dataset, is_emd, train_on_mid, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
+    def __init__(self, dataset, is_emd, train_on_mid, reg, numItermax, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
         # make sure unique classes in layers[0] 
         super(CPCCLoss, self).__init__()
         
@@ -107,6 +143,8 @@ class CPCCLoss(nn.Module):
         self.mid2coarse = dataset.mid2coarse
         self.is_emd = is_emd
         self.train_on_mid = train_on_mid
+        self.reg = reg
+        self.numItermax = numItermax
 
         # TODO: map = [(weight, class_id)], current setting weight == 1 everywhere
         # four levels always at the same height
@@ -117,13 +155,21 @@ class CPCCLoss(nn.Module):
         # where fine and coarse always of the same height
         all_fine = torch.unique(target_fine)
         
-        if self.is_emd:
+        if self.is_emd > 0:
             pairwise_dist = []
             all_pairwise = torch.cdist(representations, representations)
             target_indices = [torch.where(target_fine == fine)[0] for fine in all_fine]
             combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
             dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
-            pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
+
+            if self.is_emd == 1: # original EMD
+                pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
+            elif self.is_emd == 2: # sinkhorn
+                # pairwise_dist = torch.stack([sinkhorn(M, self.reg, self.numItermax) for M in dist_matrices])
+                pairwise_dist = torch.stack([SK.apply(M, self.reg, self.numItermax) for M in dist_matrices])
+            else: # SmoothOT
+                assert self.is_emd == 3
+                pairwise_dist = torch.stack([smooth(M, self.reg) for M in dist_matrices])
         
         else: # use Euclidean distance
             # get the center of all fine classes
