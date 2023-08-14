@@ -18,6 +18,7 @@ class SK(torch.autograd.Function):
         a = np.full(m, 1 / m)
         b = np.full(n, 1 / n)
         flow = torch.tensor(ot.sinkhorn(a, b, M_np, reg=reg, numItermax=numItermax)).to(M.device)
+        # flow = torch.tensor(np.random.rand(m,n)).to(M.device)
         emd = (M * flow).sum()
 
         ctx.save_for_backward(flow)
@@ -69,35 +70,35 @@ class OTEMDFunction(torch.autograd.Function):
         grad_cost_matrix = flow * grad_output
         return grad_cost_matrix
 
-class SmoothOT(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, M, semi=True, regul=SquaredL2(gamma=1.0), max_iter=1000):
-        # Convert torch tensor to numpy array
-        M_np = M.detach().cpu().numpy()
+# class SmoothOT(torch.autograd.Function):
+#     @staticmethod
+#     def forward(ctx, M, semi=True, regul=SquaredL2(gamma=1.0), max_iter=1000):
+#         # Convert torch tensor to numpy array
+#         M_np = M.detach().cpu().numpy()
         
-        # Compute the weight vectors a and b
-        m, n = M.shape
-        a = np.full(m, 1 / m)
-        b = np.full(n, 1 / n)
+#         # Compute the weight vectors a and b
+#         m, n = M.shape
+#         a = np.full(m, 1 / m)
+#         b = np.full(n, 1 / n)
         
-        if semi:
-            alpha = solve_semi_dual(a, b, M_np, regul, max_iter=max_iter)
-            T = get_plan_from_semi_dual(alpha, b, M_np, regul)
-        else:
-            alpha, beta = solve_dual(a, b, M_np, regul, max_iter=max_iter)
-            T = get_plan_from_dual(alpha, beta, M_np, regul)
+#         if semi:
+#             alpha = solve_semi_dual(a, b, M_np, regul, max_iter=max_iter)
+#             T = get_plan_from_semi_dual(alpha, b, M_np, regul)
+#         else:
+#             alpha, beta = solve_dual(a, b, M_np, regul, max_iter=max_iter)
+#             T = get_plan_from_dual(alpha, beta, M_np, regul)
 
-        # Save T for backward pass
-        T_tensor = torch.from_numpy(T).to(M.device)
-        ctx.save_for_backward(T_tensor)
+#         # Save T for backward pass
+#         T_tensor = torch.from_numpy(T).to(M.device)
+#         ctx.save_for_backward(T_tensor)
 
-        return torch.sum(T_tensor * M) + torch.tensor(regul.Omega(T)).to(M.device)
+#         return torch.sum(T_tensor * M) + torch.tensor(regul.Omega(T)).to(M.device)
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        # Retrieve T
-        T, = ctx.saved_tensors
-        return T * grad_output, None, None, None
+#     @staticmethod
+#     def backward(ctx, grad_output):
+#         # Retrieve T
+#         T, = ctx.saved_tensors
+#         return T * grad_output, None, None, None
 
 def smooth(M, reg):
     M_np = M.detach().cpu().numpy()

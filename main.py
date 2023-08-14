@@ -241,6 +241,11 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch'] + 1
             print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+
+        epochs_no_improve = 0 
+        min_val_loss = np.Inf
+        early_stop_patience = 10
+        epochs_durations = []
         
         for epoch in range(start_epoch, epochs):
             t_start = datetime.now() # record the time for each epoch
@@ -385,6 +390,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             t_delta = (t_end-t_start).total_seconds()
             print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_one: {sum(test_one_accs)/len(test_one_accs)}")
             print(f"Epoch {epoch} takes {t_delta} sec.")
+            epochs_durations.append(t_delta)
 
             log_dict = {"train_one_acc":sum(train_one_accs)/len(train_one_accs),
                         "train_losses_ce":sum(train_losses_ce)/len(train_losses_ce),
@@ -400,10 +406,44 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 log_dict["val_losses_group"] = sum(test_losses_group)/len(test_losses_group)
             
             wandb.log(log_dict)
+
+            val_loss = sum(test_losses_ce)/len(test_losses_ce)
+            if val_loss < min_val_loss:
+                min_val_loss = val_loss
+                if epoch > (epochs // 2):
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss,
+                    }, save_dir+'/best_model.pth')
+
+                    epochs_no_improve = 0 
+
+            else:
+                if epoch > (epochs // 2):
+                    epochs_no_improve += 1
+                    if epochs_no_improve > early_stop_patience:
+                        print('Early stopping!')
+                        break
         
+
+        checkpoint = torch.load(save_dir+'/best_model.pth')
+        model.load_state_dict(checkpoint['model_state_dict'])
         torch.save(model.state_dict(), out_dir)
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         wandb.finish()
-        
+
+        avg_epoch_duration = sum(epochs_durations) / len(epochs_durations)
+        print(f"Average epoch duration: {avg_epoch_duration} sec.")
+        print(f"Best val loss: {checkpoint['loss']}, at epoch {checkpoint['epoch']}")
+
+        # Log to file
+        with open(save_dir+f'/training_log_{seed}.txt', 'w') as f:
+            f.write(f"Average epoch duration: {avg_epoch_duration} sec.\n")
+            f.write(f"Best val loss: {checkpoint['loss']}, at epoch {checkpoint['epoch']}\n")
+            f.write(f"epochs_durations: {epochs_durations} \n")
+
         return model
 
     def curriculum_pretrain(train_loader : DataLoader, test_loader : DataLoader, 
@@ -1297,7 +1337,7 @@ def main():
                 levels = ['coarsest','coarse','mid','fine']
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting)
     
-    # downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
+    downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
     retrieve_final_metrics(test_loader, dataset_name)
     # if (dataset_name == 'CIFAR') and (split == 'full'):
     #     ood_detection(seeds, dataset_name, exp_name)
