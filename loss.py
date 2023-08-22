@@ -5,6 +5,7 @@ import numpy as np
 import cv2
 import ot
 from itertools import combinations
+from treeOT import *
 
 import random
 from typing import *
@@ -118,6 +119,26 @@ def sinkhorn(M, reg, numItermax):
 
     return torch.tensor(ot.sinkhorn2(a, b, M_np, reg=reg, numItermax=numItermax))
 
+def compute_tree_ot_distance(pair, representations, all_pairwise):
+    samples_A = representations[pair[0]].detach().cpu().numpy()
+    samples_B = representations[pair[1]].detach().cpu().numpy()
+
+    # Create probability distributions
+    combined_samples_size = samples_A.shape[0] + samples_B.shape[0]
+    a = np.ones(combined_samples_size) / samples_A.shape[0]
+    b = np.ones(combined_samples_size) / samples_B.shape[0]
+
+    # Adjust 'a' and 'b'
+    a[samples_A.shape[0]:] = 0
+    b[:samples_B.shape[0]] = 0
+
+    # Use treeOT to compute distance
+    tree_ot = treeOT(np.vstack([samples_A, samples_B]), method='cluster', lam=0.001, n_slice=1, is_sparse=True)
+    distance = tree_ot.pairwiseTWD(a, b)
+    
+    return torch.tensor(distance).to(representations.device)
+
+
 class CPCCLoss(nn.Module):
     '''
     CPCC as a mini-batch regularizer.
@@ -168,9 +189,29 @@ class CPCCLoss(nn.Module):
             elif self.is_emd == 2: # sinkhorn
                 # pairwise_dist = torch.stack([sinkhorn(M, self.reg, self.numItermax) for M in dist_matrices])
                 pairwise_dist = torch.stack([SK.apply(M, self.reg, self.numItermax) for M in dist_matrices])
-            else: # SmoothOT
-                assert self.is_emd == 3
+            elif self.is_emd == 3: # SmoothOT
                 pairwise_dist = torch.stack([smooth(M, self.reg) for M in dist_matrices])
+            else:
+                pairwise_dist = torch.stack([compute_tree_ot_distance(pair, representations, all_pairwise) for pair in combidx])
+                # for pair in combidx:
+                #     samples_A = representations[pair[0]].detach().cpu().numpy()
+                #     samples_B = representations[pair[1]].detach().cpu().numpy()
+                    
+                #     # Create probability distributions
+                #     combined_samples_size = samples_A.shape[0] + samples_B.shape[0]
+                #     a = np.ones(combined_samples_size) / samples_A.shape[0]
+                #     b = np.ones(combined_samples_size) / samples_B.shape[0]
+
+                #     # The first part of 'a' corresponds to samples_A, and the second part to zeros.
+                #     a[samples_A.shape[0]:] = 0
+                #     # The first part of 'b' corresponds to zeros, and the second part to samples_B.
+                #     b[:samples_B.shape[0]] = 0
+
+                #     # Use treeOT to compute distance
+                #     tree_ot = treeOT(np.vstack([samples_A, samples_B]), method='cluster', lam=0.001, n_slice=1, is_sparse=True)
+                #     distance = tree_ot.pairwiseTWD(a, b)
+                #     # print("TWD: ", distance, "EMD: ", ot.emd2(torch.tensor([]), torch.tensor([]), all_pairwise.index_select(0,pair[0]).index_select(1,pair[1])))
+                #     pairwise_dist.append(torch.tensor(distance).to(representations.device))
         
         else: # use Euclidean distance
             # get the center of all fine classes
