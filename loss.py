@@ -119,9 +119,11 @@ def sinkhorn(M, reg, numItermax):
 
     return torch.tensor(ot.sinkhorn2(a, b, M_np, reg=reg, numItermax=numItermax))
 
-def compute_tree_ot_distance(pair, representations, all_pairwise):
-    samples_A = representations[pair[0]].detach().cpu().numpy()
-    samples_B = representations[pair[1]].detach().cpu().numpy()
+def compute_tree_ot_distance(dataset, pair, representations_np, target_fine_np):
+    index_A = pair[0].cpu().numpy()
+    index_B = pair[1].cpu().numpy()
+    samples_A = representations_np[index_A]
+    samples_B = representations_np[index_B]
 
     # Create probability distributions
     combined_samples_size = samples_A.shape[0] + samples_B.shape[0]
@@ -133,10 +135,11 @@ def compute_tree_ot_distance(pair, representations, all_pairwise):
     b[:samples_B.shape[0]] = 0
 
     # Use treeOT to compute distance
-    tree_ot = treeOT(np.vstack([samples_A, samples_B]), method='cluster', lam=0.001, n_slice=1, is_sparse=True)
+    tree_ot = treeOT(dataset, samples_A, target_fine_np[index_A][0], samples_B, target_fine_np[index_B][0], lam=0.001, n_slice=1, is_sparse=True)
     distance = tree_ot.pairwiseTWD(a, b)
+    print("TWD: ", distance)
     
-    return torch.tensor(distance).to(representations.device)
+    return distance
 
 
 class CPCCLoss(nn.Module):
@@ -167,6 +170,7 @@ class CPCCLoss(nn.Module):
         self.train_on_mid = train_on_mid
         self.reg = reg
         self.numItermax = numItermax
+        self.dataset = dataset
 
         # TODO: map = [(weight, class_id)], current setting weight == 1 everywhere
         # four levels always at the same height
@@ -192,7 +196,13 @@ class CPCCLoss(nn.Module):
             elif self.is_emd == 3: # SmoothOT
                 pairwise_dist = torch.stack([smooth(M, self.reg) for M in dist_matrices])
             else:
-                pairwise_dist = torch.stack([compute_tree_ot_distance(pair, representations, all_pairwise) for pair in combidx])
+                representations_np = representations.detach().cpu().numpy()
+                # all_samples = [representations[target_fine == fine] for fine in all_fine]
+                # all_samples = all_samples.detach().cpu().numpy()
+                # tree_ot = treeOT(dataset, all_samples, all_fine.detach().cpu().numpy(), lam=0.001, n_slice=1, is_sparse=True)
+
+                target_fine_np = target_fine.detach().cpu().numpy()
+                pairwise_dist = torch.stack([torch.tensor(compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)).to(representations.device) for pair in combidx])
                 # for pair in combidx:
                 #     samples_A = representations[pair[0]].detach().cpu().numpy()
                 #     samples_B = representations[pair[1]].detach().cpu().numpy()

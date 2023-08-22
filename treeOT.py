@@ -9,15 +9,49 @@ from scipy.sparse import csr_matrix
 import networkx as nx
 import joblib
 
+
+class HierarchicalTreeBuilder:
+    def __init__(self, dataset, layers):
+        self.layers = layers
+        self.fine2mid = dataset.mid_map
+        self.fine2coarse = dataset.coarse_map
+
+    def build_tree(self, samples_A, label_A, samples_B, label_B):
+        tree = Tree()
+        tree.create_node("Root", "root")
+
+        # Create nodes for coarse categories
+        coarse_A_id = f"coarse_{self.fine2coarse[label_A]}"
+        coarse_B_id = f"coarse_{self.fine2coarse[label_B]}"
+        tree.create_node(f"Coarse_{self.fine2coarse[label_A]}", coarse_A_id, parent="root")
+        if self.fine2coarse[label_A] != self.fine2coarse[label_B]:
+            tree.create_node(f"Coarse_{self.fine2coarse[label_B]}", coarse_B_id, parent="root")
+
+        # Create nodes for mid layer
+        mid_A_id = f"mid_{self.fine2mid[label_A]}"
+        mid_B_id = f"mid_{self.fine2mid[label_B]}"
+        tree.create_node(f"Mid_{self.fine2mid[label_A]}", mid_A_id, parent=coarse_A_id)
+        if self.fine2mid[label_A] != self.fine2mid[label_B]:
+            tree.create_node(f"Mid_{self.fine2mid[label_B]}", mid_B_id, parent=coarse_B_id)
+
+        # Create nodes for fine samples
+        for idx, sample in enumerate(samples_A):
+            sample_id = f"sample_A_{idx}"
+            tree.create_node(f"Sample_{sample}", sample_id, parent=mid_A_id, data=idx)
+
+        for idx, sample in enumerate(samples_B, start=len(samples_A)):
+            sample_id = f"sample_B_{idx}"
+            tree.create_node(f"Sample_{sample}", sample_id, parent=mid_B_id, data=idx)
+        return tree
+
+
 class treeOT():
-    def __init__(self, X, method='cluster', lam=0.0001,nmax=100000, k=5, d=6, n_slice=1, debug_mode=False,is_sparse=False):
+    def __init__(self, dataset, samples_A, label_A, samples_B, label_B, lam=0.0001,nmax=100000, k=5, d=6, n_slice=1, debug_mode=False,is_sparse=False):
         """
          Parameter
          ----------
          X :
              a set of supports
-         method :
-             'cluster' (clustering tree) or 'quad' (quadtree)
          k : int
              a number of child nodes
          d : int
@@ -32,23 +66,15 @@ class treeOT():
 
         self.n_slice = n_slice
 
+        X = np.vstack([samples_A, samples_B])
+
         # for i in tqdm(range(n_slice)):
         for i in range(n_slice):
 
-            if method=='quad': #Quadtree
-                np.random.seed(i)
-
-                tree = self.build_quadtree(X, random_shift=True, width=None, origin=None)
-                print("build done")
-                #self.D1, self.D2 = self.gen_matrix(tree, X)
-            else: #Clustering tree
-                random.seed(i)
-                tree = self.build_clustertree(X, k, d, debug_mode=debug_mode)
-                print("build done")
-                #self.D1, self.D2 = self.gen_matrix(tree, X)
+            builder = HierarchicalTreeBuilder(dataset, layers=3)
+            tree = builder.build_tree(samples_A, label_A, samples_B, label_B)
 
             Bsp = self.get_B_matrix(tree,X)
-
 
             if is_sparse:
                 wv = self.calc_weight_sparse(X, Bsp, lam=lam, nmax=nmax)
@@ -64,169 +90,9 @@ class treeOT():
         self.wB = wB
 
 
-    def incremental_farthest_search(self, points, remaining_set, k, debug_mode=False):
-        n_points = len(remaining_set)
-        remaining_set = copy.deepcopy(remaining_set)
-
-        if not debug_mode:
-            # random.seed(0)
-            solution_set = [remaining_set[random.randint(0, n_points - 1)]]
-        else:
-            solution_set = [remaining_set[0]]
-        remaining_set.remove(solution_set[0])
-
-        for i in range(k - 1):
-
-            distance_list = []
-
-            for idx in remaining_set:
-                in_distance_list = [self.distance(points[idx], points[sol_idx]) for sol_idx in solution_set]
-                distance_list.append(min(in_distance_list))
-
-            sol_idx = remaining_set[np.argmax(distance_list)]
-            remaining_set.remove(sol_idx)
-            solution_set.append(sol_idx)
-
-        return solution_set
-
-
     def distance(self, A, B):
         return np.linalg.norm(A - B)
 
-
-    def grouping(self, points, remaining_set, solution_set):
-        np.random.seed(0)
-        n_points = len(points)
-        remaining_set = copy.deepcopy(remaining_set)
-
-        group = []
-        for _ in range(len(solution_set)):
-            group.append([])
-
-        for idx in remaining_set:
-            distance_list = [self.distance(points[idx], points[sol_idx]) for sol_idx in solution_set]
-            group_idx = np.argmin(distance_list)
-            group[group_idx].append(idx)
-
-        return group
-
-
-
-    def clustering(self, points, remaining_set, k, debug_mode=False):
-        solution_set = self.incremental_farthest_search(points, remaining_set, k, debug_mode=debug_mode)
-        return self.grouping(points, remaining_set, solution_set)
-
-
-    def _build_clustertree(self, X, remaining_set, k, d, debug_mode=False):
-        tree = Tree()
-        tree.create_node(data=None)
-
-        if len(remaining_set) <= k or d == 1:
-            for idx in remaining_set:
-                tree.create_node(parent=tree.root, data=idx)
-            return tree
-
-        groups = self.clustering(X, remaining_set, k, debug_mode=debug_mode)
-        # print(groups)
-        for group in groups:
-            if len(group) == 1:
-                tree.create_node(parent=tree.root, data=group[0])
-            else:
-                subtree = self._build_clustertree(X, group, k, d - 1, debug_mode=debug_mode)
-                tree.paste(tree.root, subtree)
-        return tree
-
-
-    def build_clustertree(self, X, k, d, debug_mode=False):
-        """
-        k : the number of child nodes
-        d : the depth of the tree
-        """
-        remaining_set = [i for i in range(len(X))]
-        return self._build_clustertree(X, remaining_set, k, d, debug_mode=debug_mode)
-
-    def _build_quadtree(self, X, origin, remaining_idx, width):
-        d = X.shape[1]  # dimension
-        m = len(remaining_idx)  # number of samples (i.e., support size)
-
-        tree = Tree()
-        tree.create_node(data=None)
-
-        loc = np.zeros(m).tolist()
-
-        # divide the hypercube, and obtain which hypercube a point belong to.
-        for i in range(len(remaining_idx)):
-            for j in range(d):
-                if X[remaining_idx[i]][j] > origin[j]:
-                    loc[i] += 2 ** j
-
-        child = list(set(loc))
-        child_set = [[] for _ in range(len(child))]
-        origin_set = []
-
-        for i in range(len(child)):
-            new_origin = np.zeros_like(origin)
-            for j in range(d):
-                if int(child[i]) & (2 ** j) != 0:
-                    new_origin[j] = copy.deepcopy(origin[j]) + width / 2.0
-                else:
-                    new_origin[j] = copy.deepcopy(origin[j]) - width / 2.0
-            origin_set.append(new_origin)
-
-        for i in range(m):
-            child_set[child.index(loc[i])].append(remaining_idx[i])
-
-        for i in range(len(child)):
-            if len(child_set[i]) == 1:
-                tree.create_node(parent=tree.root, data=child_set[i][0])
-            else:
-                subtree = self._build_quadtree(X, origin_set[i], child_set[i], width / 2.0)
-                tree.paste(tree.root, subtree)
-
-        return tree
-
-    def build_quadtree(self, X, random_shift=True, width=None, origin=None):
-        """
-        Assume that X[i] in [0, width]^d.
-        """
-        #np.random.seed(0)
-        if random_shift:
-            # check the assumption.
-            if np.min(X) < 0:
-                print("Warn : Assumption")
-                X = X - np.min(X)
-            elif np.min(X) != 0:
-                print("Warn : Assumption")
-
-            width = np.max(X)
-            origin = np.random.uniform(low=0.0, high=width, size=X.shape[1])
-
-        remaining_idx = [i for i in range(X.shape[0])]
-
-        return self._build_quadtree(X, origin, remaining_idx, width)
-
-
-    def gen_matrix(self, tree, X):
-        n_node = len(tree.all_nodes())
-        n_leaf = X.shape[0]
-        n_in = n_node - n_leaf
-        D1 = np.zeros((n_in, n_in))
-        D2 = np.zeros((n_in, n_leaf))
-
-        in_node = [node.identifier for node in tree.all_nodes() if node.data == None]
-
-        for node in tree.all_nodes():
-            # check node is leaf or not
-            if node.data is not None:
-                parent_idx = in_node.index(tree.parent(node.identifier).identifier)
-                D2[parent_idx, node.data] = 1.0
-            elif node.identifier == tree.root:
-                continue
-            else:
-                parent_idx = in_node.index(tree.parent(node.identifier).identifier)
-                node_idx = in_node.index(node.identifier)
-                D1[parent_idx, node_idx] = 1.0
-        return D1, D2
 
     def get_B_matrix(self, tree, X):
         n_node = len(tree.all_nodes())
@@ -265,42 +131,6 @@ class treeOT():
         B = sparse.csc_matrix((np.ones(n_edge), (row_ind, col_ind)), shape=(n_node, n_leaf), dtype='float32')
         return B
 
-    def get_B_matrix_networkx(T, root_node, nodes_tree=[]):
-        """
-        Usage:
-        #G is a Graph (networkx format)
-
-        T = nx.dfs_tree(G, root_node)
-        B,nodes_tree = get_matrix_networkx(G,root_node,nodes_tree=labels)
-        Bsp = sparse.csc_matrix(B)
-
-        :param root_node:
-        :return: B, nodes_tree
-        """
-        if len(nodes_tree) == 0:
-            nodes_tree = list(T.nodes())
-
-        dict_nodes = {}
-        ii = 0
-        for node in nodes_tree:
-            dict_nodes[node] = ii
-            ii += 1
-
-        B = np.zeros((len(nodes_tree), len(nodes_tree)))
-        ii = 0
-        for node in nodes_tree:
-            node_current = node
-            B[dict_nodes[node_current], ii] = 1
-            B[dict_nodes[root_node], ii] = 1
-            while node_current is not root_node:
-                try:
-                    node_current = list(T.predecessors(node_current))[0]
-                    B[dict_nodes[node_current], ii] = 1
-                except:
-                    node_current = root_node
-            ii += 1
-
-        return B, nodes_tree
 
     def calc_weight(self, X, B, lam=0.001, seed=0, nmax=100000):
 
