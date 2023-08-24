@@ -137,7 +137,7 @@ def compute_tree_ot_distance(dataset, pair, representations_np, target_fine_np):
     # Use treeOT to compute distance
     tree_ot = treeOT(dataset, samples_A, target_fine_np[index_A][0], samples_B, target_fine_np[index_B][0], lam=0.001, n_slice=1, is_sparse=True)
     distance = tree_ot.pairwiseTWD(a, b)
-    print("TWD: ", distance)
+    # print("TWD: ", distance)
     
     return distance
 
@@ -197,12 +197,31 @@ class CPCCLoss(nn.Module):
                 pairwise_dist = torch.stack([smooth(M, self.reg) for M in dist_matrices])
             else:
                 representations_np = representations.detach().cpu().numpy()
-                # all_samples = [representations[target_fine == fine] for fine in all_fine]
-                # all_samples = all_samples.detach().cpu().numpy()
-                # tree_ot = treeOT(dataset, all_samples, all_fine.detach().cpu().numpy(), lam=0.001, n_slice=1, is_sparse=True)
+                # print("repre len: ", len(representations_np))
+                # all_samples = [representations_np[(target_fine == fine).cpu().numpy()] for fine in all_fine]
+                # # all_samples = all_samples.detach().cpu().numpy()
+                # tree_ot = treeOT(self.dataset, all_samples, all_fine.detach().cpu().numpy(), lam=0.001, n_slice=1, is_sparse=True)
 
+                # num_samples_per_class = [len(samples) for samples in all_samples]
+                # prob_matrix = np.zeros((len(all_fine), len(representations)))
+                # start_idx = 0
+                # for i, num_samples in enumerate(num_samples_per_class):
+                #     prob_matrix[i, start_idx:start_idx+num_samples] = 1/num_samples
+                #     start_idx += num_samples
+
+                # prob = [prob_matrix[i] for i in range(len(all_fine))]
+                # pairwise_dist = torch.stack([torch.tensor(tree_ot.pairwiseTWD(prob[i], prob[j])) for (i,j) in combinations(range(len(all_fine)),2)])
+                # print("pairwise_dist: ", pairwise_dist)
+                # print("pairwise_dist2: ", torch.stack([OTEMDFunction.apply(M) for M in dist_matrices]))
+                # print('done')
+
+
+                # target_fine_np = target_fine.detach().cpu().numpy()
+                # pairwise_dist = torch.stack([torch.tensor(compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)).to(representations.device) for pair in combidx])
                 target_fine_np = target_fine.detach().cpu().numpy()
                 pairwise_dist = torch.stack([torch.tensor(compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)).to(representations.device) for pair in combidx])
+                # print("pairwise_dist: ", pairwise_dist)
+                # print("pairwise_dist2: ", torch.stack([OTEMDFunction.apply(M) for M in dist_matrices]))
                 # for pair in combidx:
                 #     samples_A = representations[pair[0]].detach().cpu().numpy()
                 #     samples_B = representations[pair[1]].detach().cpu().numpy()

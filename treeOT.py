@@ -44,8 +44,49 @@ class HierarchicalTreeBuilder:
             tree.create_node(f"Sample_{sample}", sample_id, parent=mid_B_id, data=idx)
         return tree
 
+# class HierarchicalTreeBuilder:
+#     def __init__(self, dataset, layers):
+#         self.layers = layers
+#         self.fine2mid = dataset.mid_map
+#         self.fine2coarse = dataset.coarse_map
+
+#     def build_tree(self, samples, labels):
+#         tree = Tree()
+#         tree.create_node("Root", "root")
+
+#         created_coarse_nodes = set()
+#         created_mid_nodes = set()
+#         lens = 0
+
+#         for label, sample_group in zip(labels, samples):
+#             # Create nodes for coarse categories
+#             coarse_id = f"coarse_{self.fine2coarse[label]}"
+#             if coarse_id not in created_coarse_nodes:
+#                 tree.create_node(f"Coarse_{self.fine2coarse[label]}", coarse_id, parent="root")
+#                 created_coarse_nodes.add(coarse_id)
+
+#             # Create nodes for mid layer
+#             mid_id = f"mid_{self.fine2mid[label]}"
+#             if mid_id not in created_mid_nodes:
+#                 tree.create_node(f"Mid_{self.fine2mid[label]}", mid_id, parent=coarse_id)
+#                 created_mid_nodes.add(mid_id)
+
+#             # Create nodes for fine samples
+#             for idx, sample in enumerate(sample_group):
+#                 sample_id = f"sample_{label}_{idx}"
+#                 tree.create_node(f"Sample_{sample}", sample_id, parent=mid_id, data=idx)
+#             lens = lens + len(sample_group)
+        
+#         print("len(created_coarse_nodes): ", len(created_coarse_nodes))
+#         print("len(created_mid_nodes): ", len(created_mid_nodes))
+#         print("sample len: ", lens)
+
+#         return tree
+
+
 
 class treeOT():
+    # def __init__(self, dataset, samples, labels, lam=0.0001,nmax=100000, k=5, d=6, n_slice=1, debug_mode=False,is_sparse=False):
     def __init__(self, dataset, samples_A, label_A, samples_B, label_B, lam=0.0001,nmax=100000, k=5, d=6, n_slice=1, debug_mode=False,is_sparse=False):
         """
          Parameter
@@ -66,18 +107,22 @@ class treeOT():
 
         self.n_slice = n_slice
 
+        # X = np.vstack(samples)
         X = np.vstack([samples_A, samples_B])
 
         # for i in tqdm(range(n_slice)):
         for i in range(n_slice):
 
             builder = HierarchicalTreeBuilder(dataset, layers=3)
+            # tree = builder.build_tree(samples, labels)
             tree = builder.build_tree(samples_A, label_A, samples_B, label_B)
 
             Bsp = self.get_B_matrix(tree,X)
+            # self.D1, self.D2 = self.gen_matrix(tree, X)
 
             if is_sparse:
-                wv = self.calc_weight_sparse(X, Bsp, lam=lam, nmax=nmax)
+                # wv = self.calc_weight_sparse(X, Bsp, samples, lam=lam, nmax=nmax)
+                wv = self.calc_weight_sparse(X, Bsp, len(samples_A), len(samples_B), lam=lam, nmax=nmax)
             else:
                 wv = self.calc_weight(X,Bsp,lam=lam,nmax=nmax)
 
@@ -92,6 +137,28 @@ class treeOT():
 
     def distance(self, A, B):
         return np.linalg.norm(A - B)
+
+    def gen_matrix(self, tree, X):
+        n_node = len(tree.all_nodes())
+        n_leaf = X.shape[0]
+        n_in = n_node - n_leaf
+        D1 = np.zeros((n_in, n_in))
+        D2 = np.zeros((n_in, n_leaf))
+
+        in_node = [node.identifier for node in tree.all_nodes() if node.data == None]
+
+        for node in tree.all_nodes():
+            # check node is leaf or not
+            if node.data is not None:
+                parent_idx = in_node.index(tree.parent(node.identifier).identifier)
+                D2[parent_idx, node.data] = 1.0
+            elif node.identifier == tree.root:
+                continue
+            else:
+                parent_idx = in_node.index(tree.parent(node.identifier).identifier)
+                node_idx = in_node.index(node.identifier)
+                D1[parent_idx, node_idx] = 1.0
+        return D1, D2
 
 
     def get_B_matrix(self, tree, X):
@@ -129,6 +196,7 @@ class treeOT():
                 cnt+=1
 
         B = sparse.csc_matrix((np.ones(n_edge), (row_ind, col_ind)), shape=(n_node, n_leaf), dtype='float32')
+        # print("B.shape: ", B.shape)
         return B
 
 
@@ -194,7 +262,8 @@ class treeOT():
 
         return c_tmp, col_ind, row_ind, data, len(data)
 
-    def calc_weight_sparse(self,X, Bsp, lam=0.001, seed=0, nmax=100000, b=100):
+    def calc_weight_sparse(self,X, Bsp, len1, len2, lam=0.001, seed=0, nmax=100000, b=100):
+        # print('in calc')
         n_leaf, d = X.shape
         random.seed(seed)
 
@@ -202,14 +271,28 @@ class treeOT():
         dz = Bsp.shape[0]
 
         np.random.seed(seed)
-        ind1 = np.random.randint(0, n_leaf, nmax)
-        ind2 = np.random.randint(0, n_leaf, nmax)
+        # ind1 = np.random.randint(0, n_leaf, nmax)
+        # ind2 = np.random.randint(0, n_leaf, nmax)
+
+        ind1 = []
+        ind2 = []
+        for index_in_i in range(len1):
+            for index_in_j in range(len2):
+                ind1.append(index_in_i)
+                ind2.append(len1 + index_in_j)
+        
+        nmax = len(ind1)
+        # print("nmax: ", nmax)
+        if b > nmax:
+            b = nmax
 
 
         # Multi proces
         result = joblib.Parallel(n_jobs=-1)(
             joblib.delayed(self.calc_weight_in)(X, Bsp, ind1[b * i:(i + 1) * b], ind2[b * i:(i + 1) * b]) for i in
             range(int(nmax / b)))
+
+        # print("result: ", result)
 
         n_ele = 0
         for ii in range(int(nmax / b)):
@@ -241,7 +324,7 @@ class treeOT():
 
         # Solving nonnegative Lasso
         param = {'numThreads': -1, 'verbose': False,
-                 'lambda1': lam, 'it0': 10, 'max_it': 2000, 'tol': 1e-3, 'intercept': False,
+                 'lambda1': lam, 'it0': 10, 'max_it': 1000, 'tol': 1e-2, 'intercept': False,
                  'pos': True}
 
         param['loss'] = 'square'
@@ -250,6 +333,7 @@ class treeOT():
         W0 = np.zeros((Zsp.shape[1], c.shape[1]), dtype='float32', order="F")
 
         (W, optim_info) = spams.fistaFlat(c, Zsp, W0, True, **param)
+        # print("W: ", W)
 
         return W
 
