@@ -256,6 +256,8 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             train_losses_ce = []
             train_losses_cpcc = []
             train_losses_group = []
+            total_func_time = np.array([0.0,0.0,0.0,0.0,0.0, 0.0])
+            last_time_checkpoint = datetime.now()
             
             for idx, (data, _, target_coarse, target_mid, target_fine) in enumerate(train_loader):
                 data = data.to(device)
@@ -288,6 +290,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 
                 if CPCC:
                     loss_cpcc = lamb * criterion_cpcc(representation, target_one)
+                    elapsed_time_cpcc = criterion_cpcc.time
                     loss = loss_ce + loss_cpcc
                     train_losses_cpcc.append(loss_cpcc)
                 elif group:
@@ -305,6 +308,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 pred_one = prob_one.argmax(dim=1)
                 acc_one = pred_one.eq(target_one).flatten().tolist()
                 train_one_accs.extend(acc_one)
+                total_func_time += elapsed_time_cpcc
 
                 # prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
                 # pred_coarse = prob_coarse.argmax(dim=1)
@@ -318,6 +322,16 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                         print(f"Train Loss: {loss}, Acc_mid: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
                     else:
                         print(f"Train Loss: {loss}, Acc_fine: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
+                    current_time_checkpoint = datetime.now()
+                    # 计算从上一个时间戳到现在的总时间
+                    total_time = (current_time_checkpoint - last_time_checkpoint).total_seconds()
+
+                    print(f"Total time since last checkpoint: {total_time} seconds")
+                    
+                    # 重置上一次的时间戳和函数时间
+                    last_time_checkpoint = current_time_checkpoint
+                    print('total_func_time: ', total_func_time)
+                    total_func_time = np.array([0.0,0.0,0.0,0.0,0.0, 0.0])
             
             scheduler.step()
 

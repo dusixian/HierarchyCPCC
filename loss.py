@@ -9,6 +9,7 @@ from treeOT import *
 
 import random
 from typing import *
+from datetime import datetime
 
 
 class SK(torch.autograd.Function):
@@ -120,6 +121,7 @@ def sinkhorn(M, reg, numItermax):
     return torch.tensor(ot.sinkhorn2(a, b, M_np, reg=reg, numItermax=numItermax))
 
 def compute_tree_ot_distance(dataset, pair, representations_np, target_fine_np):
+    current_time0 = datetime.now()
     index_A = pair[0].cpu().numpy()
     index_B = pair[1].cpu().numpy()
     samples_A = representations_np[index_A]
@@ -136,10 +138,15 @@ def compute_tree_ot_distance(dataset, pair, representations_np, target_fine_np):
 
     # Use treeOT to compute distance
     tree_ot = treeOT(dataset, samples_A, target_fine_np[index_A][0], samples_B, target_fine_np[index_B][0], lam=0.001, n_slice=1, is_sparse=True)
+    build_time, getB_time, learn_time, wB_time = tree_ot.build_time, tree_ot.getB_time, tree_ot.learn_time, tree_ot.wB_time
+    current_time1 = datetime.now()
     distance = tree_ot.pairwiseTWD(a, b)
+    current_time2 = datetime.now()
+    twd_time = (current_time2 - current_time1).total_seconds() 
     # print("TWD: ", distance)
+    twd_total_time = (current_time2 - current_time0).total_seconds() 
     
-    return distance
+    return distance, np.array([build_time, getB_time, learn_time, wB_time, twd_time, twd_total_time])
 
 
 class CPCCLoss(nn.Module):
@@ -197,51 +204,24 @@ class CPCCLoss(nn.Module):
                 pairwise_dist = torch.stack([smooth(M, self.reg) for M in dist_matrices])
             else:
                 representations_np = representations.detach().cpu().numpy()
-                # print("repre len: ", len(representations_np))
-                # all_samples = [representations_np[(target_fine == fine).cpu().numpy()] for fine in all_fine]
-                # # all_samples = all_samples.detach().cpu().numpy()
-                # tree_ot = treeOT(self.dataset, all_samples, all_fine.detach().cpu().numpy(), lam=0.001, n_slice=1, is_sparse=True)
-
-                # num_samples_per_class = [len(samples) for samples in all_samples]
-                # prob_matrix = np.zeros((len(all_fine), len(representations)))
-                # start_idx = 0
-                # for i, num_samples in enumerate(num_samples_per_class):
-                #     prob_matrix[i, start_idx:start_idx+num_samples] = 1/num_samples
-                #     start_idx += num_samples
-
-                # prob = [prob_matrix[i] for i in range(len(all_fine))]
-                # pairwise_dist = torch.stack([torch.tensor(tree_ot.pairwiseTWD(prob[i], prob[j])) for (i,j) in combinations(range(len(all_fine)),2)])
-                # print("pairwise_dist: ", pairwise_dist)
-                # print("pairwise_dist2: ", torch.stack([OTEMDFunction.apply(M) for M in dist_matrices]))
-                # print('done')
-
-
-                # target_fine_np = target_fine.detach().cpu().numpy()
-                # pairwise_dist = torch.stack([torch.tensor(compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)).to(representations.device) for pair in combidx])
+                # print('dist_matrices: ', dist_matrices[0])
                 target_fine_np = target_fine.detach().cpu().numpy()
-                pairwise_dist = torch.stack([torch.tensor(compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)).to(representations.device) for pair in combidx])
+                # pairwise_dist = torch.stack([torch.tensor(compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)).to(representations.device) for pair in combidx])
+                total_time = np.array([0.0,0.0,0.0,0.0,0.0, 0.0])  # 初始化总时间为0
+                distances = []
+                for pair in combidx:
+                    distance, time = compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)
+                    distances.append(torch.tensor(distance).to(representations.device))
+                    total_time += time  # 累加每次调用的时间
+
+                # 使用torch.stack只对距离进行堆栈
+                self.time = total_time
+                pairwise_dist = torch.stack(distances)
+                # pairwise_dist = torch.zeros((len(combidx)))
                 # print("pairwise_dist: ", pairwise_dist)
                 # print("pairwise_dist2: ", torch.stack([OTEMDFunction.apply(M) for M in dist_matrices]))
-                # for pair in combidx:
-                #     samples_A = representations[pair[0]].detach().cpu().numpy()
-                #     samples_B = representations[pair[1]].detach().cpu().numpy()
-                    
-                #     # Create probability distributions
-                #     combined_samples_size = samples_A.shape[0] + samples_B.shape[0]
-                #     a = np.ones(combined_samples_size) / samples_A.shape[0]
-                #     b = np.ones(combined_samples_size) / samples_B.shape[0]
-
-                #     # The first part of 'a' corresponds to samples_A, and the second part to zeros.
-                #     a[samples_A.shape[0]:] = 0
-                #     # The first part of 'b' corresponds to zeros, and the second part to samples_B.
-                #     b[:samples_B.shape[0]] = 0
-
-                #     # Use treeOT to compute distance
-                #     tree_ot = treeOT(np.vstack([samples_A, samples_B]), method='cluster', lam=0.001, n_slice=1, is_sparse=True)
-                #     distance = tree_ot.pairwiseTWD(a, b)
-                #     # print("TWD: ", distance, "EMD: ", ot.emd2(torch.tensor([]), torch.tensor([]), all_pairwise.index_select(0,pair[0]).index_select(1,pair[1])))
-                #     pairwise_dist.append(torch.tensor(distance).to(representations.device))
-        
+                # assert(0==1)
+                
         else: # use Euclidean distance
             # get the center of all fine classes
             target_fine_list = [torch.mean(torch.index_select(representations, 0, (target_fine == t).nonzero().flatten()),0) for t in all_fine]
