@@ -148,6 +148,60 @@ def compute_tree_ot_distance(dataset, pair, representations_np, target_fine_np):
     
     return distance, np.array([build_time, getB_time, learn_time, wB_time, twd_time, twd_total_time])
 
+def build_tree_and_compute_path(representations, target_fine, fine2mid, fine2coarse):
+    unique_fine_classes = torch.unique(target_fine)
+    class2reps = {}  # To hold averaged representations for each class
+    
+    # Create the root node (average over all samples)
+    root = torch.mean(representations, dim=0)
+    
+    # Initialize tree with root
+    tree = {'root': {'data': root, 'children': {}}}
+    
+    for fine_class in unique_fine_classes:
+        indices = (target_fine == fine_class)
+        avg_rep = torch.mean(representations[indices], dim=0)
+        
+        mid_class = fine2mid[fine_class.item()]
+        coarse_class = fine2coarse[fine_class.item()]
+        
+        # Update mid-class and coarse-class averaged representations
+        if coarse_class not in tree['root']['children']:
+            tree['root']['children'][coarse_class] = {'data': None, 'children': {}}
+        if mid_class not in tree['root']['children'][coarse_class]['children']:
+            tree['root']['children'][coarse_class]['children'][mid_class] = {'data': None, 'children': {}}
+        
+        tree['root']['children'][coarse_class]['children'][mid_class]['children'][fine_class.item()] = {'data': avg_rep, 'children': {}}
+    
+    # Update the mid and coarse class node data by averaging children
+    for coarse_class, coarse_node in tree['root']['children'].items():
+        coarse_data = []
+        for mid_class, mid_node in coarse_node['children'].items():
+            mid_data = []
+            for fine_class, fine_node in mid_node['children'].items():
+                mid_data.append(fine_node['data'])
+            mid_data = torch.stack(mid_data).mean(dim=0)
+            mid_node['data'] = mid_data
+            coarse_data.append(mid_data)
+        coarse_data = torch.stack(coarse_data).mean(dim=0)
+        coarse_node['data'] = coarse_data
+    
+    # Calculate pairwise distance along the tree
+    pairwise_dists = []
+    for i, j in combinations(unique_fine_classes, 2):
+        mid_i = fine2mid[i.item()]
+        mid_j = fine2mid[j.item()]
+        coarse_i = fine2coarse[i.item()]
+        coarse_j = fine2coarse[j.item()]
+        
+        path_i = [tree['root']['data'], tree['root']['children'][coarse_i]['data'], tree['root']['children'][coarse_i]['children'][mid_i]['data']]
+        path_j = [tree['root']['data'], tree['root']['children'][coarse_j]['data'], tree['root']['children'][coarse_j]['children'][mid_j]['data']]
+        
+        dists = [torch.norm(a - b, p=2) for a, b in zip(path_i, path_j)]
+        pairwise_dists.append(sum(dists))
+    
+    return torch.tensor(pairwise_dists).to(representations.device)
+
 
 class CPCCLoss(nn.Module):
     '''
@@ -202,6 +256,8 @@ class CPCCLoss(nn.Module):
                 pairwise_dist = torch.stack([SK.apply(M, self.reg, self.numItermax) for M in dist_matrices])
             elif self.is_emd == 3: # SmoothOT
                 pairwise_dist = torch.stack([smooth(M, self.reg) for M in dist_matrices])
+            elif self.is_emd == 5:
+                pairwise_dist = build_tree_and_compute_path(representations, target_fine, self.fine2mid, self.fine2coarse)
             else:
                 representations_np = representations.detach().cpu().numpy()
                 # print('dist_matrices: ', dist_matrices[0])

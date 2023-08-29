@@ -495,23 +495,18 @@ class treeOT():
         # print("W.shape: ", W.shape)
 
         # def calculate_path_weight(W, Bsp, ind1, ind2):
-        #     # 计算路径向量
         #     tmp = Bsp[:, ind1] + Bsp[:, ind2] - 2 * (Bsp[:, ind1].multiply(Bsp[:, ind2]))
             
-        #     # 计算路径权重
         #     path_weight = W.T.dot(tmp.toarray())
             
         #     return path_weight[0][0]
 
-        # # 初始化路径权重矩阵
         # path_weights = np.zeros((len1, len2))
 
         # for i in range(len1):
         #     for j in range(len2):
-        #         # 计算路径权重
         #         weight = calculate_path_weight(W, Bsp, i, j+len1)
                 
-        #         # 存储路径权重
         #         path_weights[i, j] = weight
 
         # print(torch.tensor(path_weights))
