@@ -167,19 +167,19 @@ class treeOT():
             # # tree = builder.build_tree(samples, labels)
             # tree = builder.build_tree(samples_A, label_A, samples_B, label_B)
             current_time1 = datetime.now()
-            builder = SelfTreeBuilder(len(samples_A))
+            # builder = SelfTreeBuilder(len(samples_A))
 
-            # Initialize the tree and root node
-            tree = Tree()
-            tree.create_node("Root", "root")
+            # # Initialize the tree and root node
+            # tree = Tree()
+            # tree.create_node("Root", "root")
 
-            builder.build_tree("root", samples_A, samples_B, tree)
+            # builder.build_tree("root", samples_A, samples_B, tree)
+            tree = self.build_clustertree(X, k, d, debug_mode=debug_mode)
             current_time2 = datetime.now()
             total_time = (current_time2 - current_time1).total_seconds()
             self.build_time = total_time
             # tree.show(line_type='ascii')
             # assert(0==1)
-            # tree = self.build_clustertree(X, k, d, debug_mode=debug_mode)
 
             current_time1 = datetime.now()
             Bsp = self.get_B_matrix(tree,X)

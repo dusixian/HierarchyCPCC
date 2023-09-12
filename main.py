@@ -124,6 +124,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                     "is_emd": is_emd,
                     "reg": reg,
                     "numItermax": numItermax,
+                    "n_projections": n_projections
                     }
         if CPCC:
             init_config['cpcc_metric'] = cpcc_metric
@@ -154,7 +155,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             criterion_ce = nn.CrossEntropyLoss().to(device)
         else:
             criterion_ce = nn.CrossEntropyLoss().to(device)
-        criterion_cpcc = CPCCLoss(dataset, is_emd, train_on_mid, reg, numItermax, cpcc_layers, cpcc_metric).to(device) 
+        criterion_cpcc = CPCCLoss(dataset, is_emd, train_on_mid, reg, numItermax, n_projections, cpcc_layers, cpcc_metric).to(device) 
         criterion_group = GroupLasso(dataset).to(device)
         
         with open(save_dir+'/config.json', 'w') as fp:
@@ -1382,6 +1383,7 @@ if __name__ == '__main__':
     parser.add_argument("--emd", required=True, default=0, type=int, help='0-Euclidean distance, 1-EMD, 2-Sinkhorn, 3-SmoothOT')
     parser.add_argument("--reg", required=False, default=1, type=int, help='the regulization param of Sinkhorn or SmoothOT')
     parser.add_argument("--numItermax", required=False, default=10000, type=int, help='numIterMax to run Sinkhorn or SmoothOT')
+    parser.add_argument("--n_projections", required=False, default=20, type=int, help='number of projections in SWD')
 
     parser.add_argument("--lamb",type=float,default=1,help='strength of CPCC regularization')
     
@@ -1409,6 +1411,7 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     seeds = args.seeds
     lamb = args.lamb
+    n_projections = args.n_projections
 
     root = args.root 
     

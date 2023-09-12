@@ -11,6 +11,77 @@ import random
 from typing import *
 from datetime import datetime
 
+def simple(P, x, y):
+    comparison = (x.reshape(-1, 1) > y.reshape(1, -1)).astype(int)
+    comparison_eq = 1 - (x.reshape(-1, 1) == y.reshape(1, -1)).astype(int)
+    comparison[comparison == 0] = -1
+    comparison *= comparison_eq
+    return np.sum(P * comparison, axis=1)
+
+class SlicedWasserstein_np(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, X, Y, n_projections, p=2):
+        # Convert tensors to NumPy arrays for calculations
+        X_np = X.detach().cpu().numpy()
+        Y_np = Y.detach().cpu().numpy()
+        
+        d = X_np.shape[1]
+        projections = ot.sliced.get_random_projections(d, n_projections, 0)
+        # print('projections: ', projections)
+        
+        X_projections = X_np.dot(projections)
+        Y_projections = Y_np.dot(projections)
+        
+        sum_emd = 0
+        flow_matrices = []
+        
+        for X_p, Y_p in zip(X_projections.T, Y_projections.T):
+            emd_value, flow_matrix = ot.lp.emd2_1d(X_p, Y_p, log=True, metric='euclidean')
+            sum_emd += emd_value
+            flow_matrices.append(flow_matrix['G'])
+        
+        sum_emd /= n_projections
+        ctx.save_for_backward(X, Y, torch.tensor(flow_matrices), torch.tensor(projections), torch.tensor(sum_emd), torch.tensor(p))
+        sum_emd **= (1.0 / p)
+        
+        return (torch.tensor(sum_emd, dtype=torch.float32)).to(X.device) # Fixed return value
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        X, Y, flow_matrices, projections, sum_emd, p = ctx.saved_tensors
+        device = X.device
+        X = X.cpu().numpy()
+        Y = Y.cpu().numpy()
+        flow_matrices = flow_matrices.cpu().numpy()
+        projections = projections.cpu().numpy().T
+        sum_emd = sum_emd.item()
+        p = p.item()
+        
+        grad_X = np.zeros_like(X)
+        grad_Y = np.zeros_like(Y)
+        
+        for i in range(flow_matrices.shape[0]):
+            flow_matrix = flow_matrices[i]
+            X_p = X.dot(projections[i])
+            Y_p = Y.dot(projections[i])
+            df_dX = simple(flow_matrix, X_p, Y_p)
+            df_dY = simple(flow_matrix.T, Y_p, X_p)
+            
+            grad_X += df_dX.reshape(-1, 1).dot(projections[i].reshape(1, -1))
+            grad_Y += df_dY.reshape(-1, 1).dot(projections[i].reshape(1, -1))
+        
+        grad_X /= flow_matrices.shape[0]
+        grad_Y /= flow_matrices.shape[0]
+        
+        # apply chain rule for sum_emd ** (1.0 / p)
+        chain_coeff = (1.0 / p) * (sum_emd ** ((1.0 / p) - 1))
+        # print('chain_coeff: ', chain_coeff)        
+        grad_X *= chain_coeff * grad_output.item()
+        grad_Y *= chain_coeff * grad_output.item()
+
+        return torch.tensor(grad_X, dtype=torch.float32).to(device), torch.tensor(grad_Y, dtype=torch.float32).to(device), None, None
+
 
 class SK(torch.autograd.Function):
     @staticmethod
@@ -203,11 +274,139 @@ def build_tree_and_compute_path(representations, target_fine, fine2mid, fine2coa
     return torch.tensor(pairwise_dists).to(representations.device)
 
 
+# def self_sliced(X, Y, n_projections, p=2):
+#     d = X.shape[1]
+#     projections = ot.sliced.get_random_projections(d, n_projections, 0, backend=ot.backend.get_backend(X), type_as=X)
+#     X_projections = torch.matmul(X, projections)
+#     Y_projections = torch.matmul(Y, projections)
+#     sum_emd = []
+#     # sum_emd2 = []
+#     for X_p, Y_p in zip(X_projections, Y_projections):
+#         sum_emd.append(one_dSW.apply(X_p, Y_p))
+#         # sum_emd2.append(ot.wasserstein_1d(X_p, Y_p))
+#     # print('sum_emd: ', sum_emd)
+#     # print('sum_emd2: ', sum_emd2)
+#     # assert(0==1)
+#     sum_emd = torch.stack(sum_emd)
+#     return (torch.sum(sum_emd) / n_projections) ** (1.0 / p)
+
+# class one_dSW(torch.autograd.Function):
+
+#     @staticmethod
+#     def forward(ctx, X_s_projection, X_t_projection):
+#         emd_value, flow_matrix = ot.lp.emd2_1d(X_s_projection, X_t_projection, log=True, metric='euclidean')
+#         emd_value = torch.tensor(emd_value, dtype=torch.float32).to(X_s_projection.device)
+        
+#         ctx.save_for_backward(torch.tensor(flow_matrix['G'], dtype=torch.float32).to(X_s_projection.device), X_s_projection, X_t_projection)
+#         return emd_value
+
+#     @staticmethod
+#     def backward(ctx, grad_output):
+#         flow_matrix, X_s_projection, X_t_projection = ctx.saved_tensors
+
+#         n = X_s_projection.shape[0]
+#         m = X_t_projection.shape[0]
+
+#         G_X = torch.zeros(n, m, n).to(X_s_projection.device)
+#         G_Y = torch.zeros(n, m, m).to(X_s_projection.device)
+
+#         for i in range(n):
+#             for j in range(m):
+#                 if X_s_projection[i] > X_t_projection[j]:
+#                     G_X[i, j, i] = 1
+#                 elif X_s_projection[i] < X_t_projection[j]:
+#                     G_X[i, j, i] = -1
+
+#                 if X_s_projection[i] > X_t_projection[j]:
+#                     G_Y[i, j, j] = -1
+#                 elif X_s_projection[i] < X_t_projection[j]:
+#                     G_Y[i, j, j] = 1
+
+#         df_dX = torch.sum(flow_matrix.unsqueeze(-1) * G_X, dim=(0, 1))
+#         df_dY = torch.sum(flow_matrix.unsqueeze(-1) * G_Y, dim=(0, 1))
+
+#         df_dX *= grad_output
+#         df_dY *= grad_output
+
+#         return df_dX, df_dY
+
+def simple_torch(P, x, y):
+    x = x.view(-1, 1)
+    y = y.view(1, -1)
+
+    comparison = (x > y).float()
+    comparison_eq = 1 - (x == y).float()
+
+    comparison[comparison == 0] = -1
+    comparison *= comparison_eq
+
+    return torch.sum(P * comparison, dim=1)
+
+class SlicedWasserstein(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, X, Y, n_projections, p=2):
+        d = X.shape[1]
+        # print('X.shape[0]: ', X.shape[0])
+        # print('X.shape[1]: ', X.shape[1])
+        # print('Y.shape[1]: ', Y.shape[1])
+        # assert(0==1)
+        projections = ot.sliced.get_random_projections(d, n_projections, 0, backend=ot.backend.get_backend(X), type_as=X)
+        
+        X_projections = torch.matmul(X, projections)
+        Y_projections = torch.matmul(Y, projections)
+        
+        sum_emd = 0
+        flow_matrices = []
+        
+        for X_p, Y_p in zip(X_projections.T, Y_projections.T):
+            emd_value, flow_matrix = ot.lp.emd2_1d(X_p, Y_p, log=True, metric='euclidean')
+            sum_emd += emd_value
+            flow_matrices.append(torch.tensor(flow_matrix['G'], dtype=torch.float32).to(X.device))
+
+        sum_emd /= n_projections
+        ctx.save_for_backward(X, Y, torch.stack(flow_matrices), projections, torch.tensor([sum_emd], dtype=torch.float32).to(X.device), torch.tensor([p], dtype=torch.float32).to(X.device))
+        sum_emd **= (1.0 / p)
+        
+        # ctx.save_for_backward(X, Y, torch.stack(flow_matrices), projections, torch.tensor([sum_emd], dtype=torch.float32).to(X.device), torch.tensor([p], dtype=torch.float32).to(X.device))
+        
+        return sum_emd
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        X, Y, flow_matrices, projections, sum_emd, p = ctx.saved_tensors
+        projections = projections.T
+        grad_X = torch.zeros_like(X)
+        grad_Y = torch.zeros_like(Y)
+        
+        for i in range(flow_matrices.shape[0]):
+            flow_matrix = flow_matrices[i]
+            X_p = X @ projections[i]
+            Y_p = Y @ projections[i]
+            df_dX, df_dY = simple_torch(flow_matrix, X_p, Y_p), simple_torch(flow_matrix.T, Y_p, X_p)  # Replace with your actual function
+            
+            # Chain rule: accumulate gradients
+            grad_X += df_dX.view(-1, 1) @ projections[i].view(1, -1)
+            grad_Y += df_dY.view(-1, 1) @ projections[i].view(1, -1)
+        
+        grad_X /= flow_matrices.shape[0]
+        grad_Y /= flow_matrices.shape[0]
+        
+        # apply chain rule for sum_emd ** (1.0 / p)
+        chain_coeff = (1.0 / p.item()) * (sum_emd.item() ** ((1.0 / p.item()) - 1))
+        # print('chain_coeff: ', chain_coeff)
+        
+        grad_X *= chain_coeff * grad_output
+        grad_Y *= chain_coeff * grad_output
+
+        return grad_X, grad_Y, None, None  # Return None for n_projections and p as they don't require gradients
+
+
 class CPCCLoss(nn.Module):
     '''
     CPCC as a mini-batch regularizer.
     '''
-    def __init__(self, dataset, is_emd, train_on_mid, reg, numItermax, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
+    def __init__(self, dataset, is_emd, train_on_mid, reg, numItermax, n_projections, layers : List[str] = ['coarse'], distance_type : str = 'l2'):
         # make sure unique classes in layers[0] 
         super(CPCCLoss, self).__init__()
         
@@ -232,6 +431,7 @@ class CPCCLoss(nn.Module):
         self.reg = reg
         self.numItermax = numItermax
         self.dataset = dataset
+        self.n_projections = n_projections
 
         # TODO: map = [(weight, class_id)], current setting weight == 1 everywhere
         # four levels always at the same height
@@ -245,9 +445,11 @@ class CPCCLoss(nn.Module):
         if self.is_emd > 0:
             pairwise_dist = []
             all_pairwise = torch.cdist(representations, representations)
+            representations_np = representations.detach().cpu().numpy()
             target_indices = [torch.where(target_fine == fine)[0] for fine in all_fine]
             combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
-            dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
+            if self.is_emd != 6 and self.is_emd != 7:
+                dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
 
             if self.is_emd == 1: # original EMD
                 pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
@@ -258,25 +460,30 @@ class CPCCLoss(nn.Module):
                 pairwise_dist = torch.stack([smooth(M, self.reg) for M in dist_matrices])
             elif self.is_emd == 5:
                 pairwise_dist = build_tree_and_compute_path(representations, target_fine, self.fine2mid, self.fine2coarse)
+            elif self.is_emd == 6:
+                pairwise_dist = torch.stack([ot.sliced_wasserstein_distance(representations[pair[0]], representations[pair[1]], n_projections=self.n_projections) for pair in combidx])
+                # pairwise_dist = torch.stack([torch.tensor(ot.sliced_wasserstein_distance(representations_np[pair[0].cpu().numpy()], representations_np[pair[1].cpu().numpy()], n_projections=self.n_projections)).to(representations.device) for pair in combidx])
+            elif self.is_emd == 7:
+                pairwise_dist = torch.stack([SlicedWasserstein_np.apply(representations[pair[0]], representations[pair[1]], self.n_projections) for pair in combidx])
+                # pairwise_dist = torch.stack([self_sliced_np(representations_np[pair[0].cpu().numpy()], representations[pair[1].cpu().numpy()], self.n_projections) for pair in combidx])
             else:
                 representations_np = representations.detach().cpu().numpy()
                 # print('dist_matrices: ', dist_matrices[0])
                 target_fine_np = target_fine.detach().cpu().numpy()
                 # pairwise_dist = torch.stack([torch.tensor(compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)).to(representations.device) for pair in combidx])
-                total_time = np.array([0.0,0.0,0.0,0.0,0.0, 0.0])  # 初始化总时间为0
+                total_time = np.array([0.0,0.0,0.0,0.0,0.0, 0.0])
                 distances = []
                 for pair in combidx:
                     distance, time = compute_tree_ot_distance(self.dataset, pair, representations_np, target_fine_np)
                     distances.append(torch.tensor(distance).to(representations.device))
-                    total_time += time  # 累加每次调用的时间
+                    total_time += time 
 
-                # 使用torch.stack只对距离进行堆栈
                 self.time = total_time
                 pairwise_dist = torch.stack(distances)
                 # pairwise_dist = torch.zeros((len(combidx)))
-                # print("pairwise_dist: ", pairwise_dist)
-                # print("pairwise_dist2: ", torch.stack([OTEMDFunction.apply(M) for M in dist_matrices]))
-                # assert(0==1)
+                print("pairwise_dist: ", pairwise_dist)
+                print("pairwise_dist2: ", torch.stack([OTEMDFunction.apply(M) for M in dist_matrices]))
+                assert(0==1)
                 
         else: # use Euclidean distance
             # get the center of all fine classes
