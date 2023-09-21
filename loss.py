@@ -10,6 +10,55 @@ from treeOT import *
 import random
 from typing import *
 from datetime import datetime
+import ot_estimators
+from ot.lp import wasserstein_1d
+from ot.utils import list_to_array
+from ot.backend import get_backend
+
+def sliced_wasserstein_distance(X_s, X_t, a=None, b=None, n_projections=50, p=2,
+                                projections=None, seed=None, log=False):
+    # start_time = time.time()
+    X_s, X_t = list_to_array(X_s, X_t)
+    # print('sample number1 =', X_s.shape[0], ', number2 = ', X_t.shape[0])
+    # print('dim =', X_s.shape[1])
+
+    if a is not None and b is not None and projections is None:
+        nx = get_backend(X_s, X_t, a, b)
+    elif a is not None and b is not None and projections is not None:
+        nx = get_backend(X_s, X_t, a, b, projections)
+    elif a is None and b is None and projections is not None:
+        nx = get_backend(X_s, X_t, projections)
+    else:
+        nx = get_backend(X_s, X_t)
+
+    n = X_s.shape[0]
+    m = X_t.shape[0]
+
+    if X_s.shape[1] != X_t.shape[1]:
+        raise ValueError(
+            "X_s and X_t must have the same number of dimensions {} and {} respectively given".format(X_s.shape[1],
+                                                                                                      X_t.shape[1]))
+
+    if a is None:
+        a = nx.full(n, 1 / n, type_as=X_s)
+    if b is None:
+        b = nx.full(m, 1 / m, type_as=X_s)
+
+    d = X_s.shape[1]
+
+    if projections is None:
+        projections = ot.sliced.get_random_projections(d, n_projections, seed, backend=nx, type_as=X_s)
+    else:
+        n_projections = projections.shape[1]
+    X_s_projections = nx.dot(X_s, projections)
+    X_t_projections = nx.dot(X_t, projections)
+    projected_emd = wasserstein_1d(X_s_projections, X_t_projections, a, b, p=p)
+    res = (nx.sum(projected_emd) / n_projections) ** (1.0 / p)
+
+    # end_time = time.time()
+    if log:
+        return res, start_time - end_time
+    return res
 
 def simple(P, x, y):
     comparison = (x.reshape(-1, 1) > y.reshape(1, -1)).astype(int)
@@ -401,6 +450,38 @@ class SlicedWasserstein(torch.autograd.Function):
 
         return grad_X, grad_Y, None, None  # Return None for n_projections and p as they don't require gradients
 
+class flowtree(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, X, Y):
+        X_np = X.detach().cpu().numpy()
+        Y_np = Y.detach().cpu().numpy()
+        X_cnt = X.shape[0]
+        Y_cnt = Y.shape[0]
+        vocab = np.vstack([X_np, Y_np])
+        vocab = vocab.astype(np.float32)
+        dataset = [
+            [(i, 1/X_cnt) for i in range(X_cnt)],
+            [(i+X_cnt, 1/Y_cnt) for i in range(Y_cnt)] 
+        ]
+        ote.load_vocabulary(vocab)
+        ote.load_dataset(dataset)
+        emd, flow_matrix = ote.compute_flowtree_emd_between_dataset_points()
+        ctx.save_for_backward(X, Y, torch.tensor(flow_matrices))
+        return emd
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        X, Y, flow_matrices = ctx.saved_tensors
+        device = X.device
+        X = X.cpu().numpy()
+        Y = Y.cpu().numpy()
+        flow_matrices = flow_matrices.cpu().numpy()
+        df_dX = simple(flow_matrix, X, Y) * grad_output.item()
+        df_dY = simple(flow_matrix.T, Y, X) * grad_output.item()
+
+        return torch.tensor(df_dX, dtype=torch.float32).to(device), torch.tensor(df_dY, dtype=torch.float32).to(device)
+
+
 
 class CPCCLoss(nn.Module):
     '''
@@ -461,11 +542,13 @@ class CPCCLoss(nn.Module):
             elif self.is_emd == 5:
                 pairwise_dist = build_tree_and_compute_path(representations, target_fine, self.fine2mid, self.fine2coarse)
             elif self.is_emd == 6:
-                pairwise_dist = torch.stack([ot.sliced_wasserstein_distance(representations[pair[0]], representations[pair[1]], n_projections=self.n_projections) for pair in combidx])
+                pairwise_dist = torch.stack([sliced_wasserstein_distance(representations[pair[0]], representations[pair[1]], n_projections=self.n_projections) for pair in combidx])
                 # pairwise_dist = torch.stack([torch.tensor(ot.sliced_wasserstein_distance(representations_np[pair[0].cpu().numpy()], representations_np[pair[1].cpu().numpy()], n_projections=self.n_projections)).to(representations.device) for pair in combidx])
             elif self.is_emd == 7:
                 pairwise_dist = torch.stack([SlicedWasserstein_np.apply(representations[pair[0]], representations[pair[1]], self.n_projections) for pair in combidx])
                 # pairwise_dist = torch.stack([self_sliced_np(representations_np[pair[0].cpu().numpy()], representations[pair[1].cpu().numpy()], self.n_projections) for pair in combidx])
+            elif self.is_emd == 8: # flowtree
+                pairwise_dist = torch.stack([flowtree.apply(representations[pair[0]], representations[pair[1]]) for pair in combidx])
             else:
                 representations_np = representations.detach().cpu().numpy()
                 # print('dist_matrices: ', dist_matrices[0])
