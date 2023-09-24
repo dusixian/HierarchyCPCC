@@ -427,7 +427,6 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                         "val_one_acc":sum(test_one_accs)/len(test_one_accs),
                         "val_losses_ce":sum(test_losses_ce)/len(test_losses_ce),
                     }
-            
             if CPCC: # batch-CPCC
                 log_dict["train_losses_cpcc"] = sum(train_losses_cpcc)/len(train_losses_cpcc)
                 log_dict["val_losses_cpcc"] = sum(test_losses_cpcc)/len(test_losses_cpcc)
@@ -436,7 +435,6 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 log_dict["val_losses_group"] = sum(test_losses_group)/len(test_losses_group)
             
             wandb.log(log_dict)
-
             val_loss = sum(test_losses_ce)/len(test_losses_ce)
             if val_loss < min_val_loss:
                 min_val_loss = val_loss
@@ -445,7 +443,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                         'epoch': epoch,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': loss,
+                        'loss': val_loss,
                     }, save_dir+'/best_model.pth')
 
                     epochs_no_improve = 0 
