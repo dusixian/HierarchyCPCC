@@ -6,6 +6,7 @@ import cv2
 import ot
 from itertools import combinations
 from treeOT import *
+import time
 
 import random
 from typing import *
@@ -481,6 +482,66 @@ class flowtree(torch.autograd.Function):
 
         return torch.tensor(df_dX, dtype=torch.float32).to(device), torch.tensor(df_dY, dtype=torch.float32).to(device)
 
+def compute_flow_symmetric(a_sample, b_sample):
+    # print('a_sample len:', a_sample.shape[0])
+    # print('b_sample len:', b_sample.shape[0])
+    start = time.time()
+    device = a_sample.device
+    n, m = a_sample.shape[0], b_sample.shape[0]
+    a = torch.full((n,), 1 / n, device=device)
+    b = torch.full((m,), 1 / m, device=device)
+    
+    half_n = n // 2
+    compressed_flow = torch.zeros(2*(n+m), device=device)
+    index_1 = torch.zeros(2*(n+m), dtype=torch.long)
+    index_2 = torch.zeros(2*(n+m), dtype=torch.long)
+    
+    i, j, k = 0, 0, 0
+    while i < half_n and j < m:
+        min_val = min(a[i].item(), b[j].item())
+        
+        compressed_flow[k] = min_val
+        index_1[k] = i
+        index_2[k] = j
+        k += 1
+        
+        compressed_flow[k] = min_val
+        index_1[k] = n - i - 1
+        index_2[k] = m - j - 1
+        k += 1
+        
+        a[i] -= min_val
+        b[j] -= min_val
+        
+        if a[i] == 0:
+            i += 1
+        if b[j] == 0:
+            j += 1
+
+    if n % 2 == 1:
+        i = half_n
+        while j < m:
+            min_val = min(a[i].item(), b[j].item())
+            
+            compressed_flow[k] = min_val
+            index_1[k] = i
+            index_2[k] = j
+            k += 1
+            
+            a[i] -= min_val
+            b[j] -= min_val
+            
+            if a[i] == 0:
+                break
+            if b[j] == 0:
+                j += 1
+
+    index_1 = index_1[:k]
+    index_2 = index_2[:k]
+    distances = torch.norm(a_sample[index_1] - b_sample[index_2], dim=1)
+    # print('the time is : ', time.time() - start)
+    return torch.sum(distances * compressed_flow[:k])
+
 
 
 class CPCCLoss(nn.Module):
@@ -529,7 +590,7 @@ class CPCCLoss(nn.Module):
             representations_np = representations.detach().cpu().numpy()
             target_indices = [torch.where(target_fine == fine)[0] for fine in all_fine]
             combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
-            if self.is_emd != 6 and self.is_emd != 7:
+            if self.is_emd != 6 and self.is_emd != 7 and self.is_emd != 8 and self.is_emd != 9:
                 dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
 
             if self.is_emd == 1: # original EMD
@@ -549,6 +610,8 @@ class CPCCLoss(nn.Module):
                 # pairwise_dist = torch.stack([self_sliced_np(representations_np[pair[0].cpu().numpy()], representations[pair[1].cpu().numpy()], self.n_projections) for pair in combidx])
             elif self.is_emd == 8: # flowtree
                 pairwise_dist = torch.stack([flowtree.apply(representations[pair[0]], representations[pair[1]]) for pair in combidx])
+            elif self.is_emd == 9: # simple flow
+                pairwise_dist = torch.stack([compute_flow_symmetric(representations[pair[0]], representations[pair[1]]) for pair in combidx])
             else:
                 representations_np = representations.detach().cpu().numpy()
                 # print('dist_matrices: ', dist_matrices[0])

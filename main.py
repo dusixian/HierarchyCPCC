@@ -36,7 +36,7 @@ import seaborn as sns
 
 from model import init_model
 from data import make_kshot_loader, make_dataloader
-from loss import CPCCLoss, QuadrupletLoss, GroupLasso
+from loss import CPCCLoss, QuadrupletLoss, GroupLasso, SK, SlicedWasserstein_np
 from param import init_optim_schedule, load_params
 from utils import get_layer_prob_from_fine, seed_everything
 
@@ -92,7 +92,10 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             else:
                 num_classes = [len(dataset.fine_names)]
         
-        coarse_targets_map = dataset.coarse_map
+        if train_on_mid:
+            coarse_targets_map = dataset.mid2coarse
+        else:
+            coarse_targets_map = dataset.coarse_map
         mid_targets_map = dataset.mid_map
         num_train_batches = len(train_loader.dataset) // train_loader.batch_size + 1
         last_train_batch_size = len(train_loader.dataset)  % train_loader.batch_size
@@ -192,9 +195,17 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             '''
                 Helper to calculate non CPCC loss, also return representation and model raw output
             '''
-            representation, output_one = model(data)
-            loss_ce = criterion_ce(output_one, target_one)
+            if coarse_ce: 
+                representation, output_fine = model(data)
+                prob_fine = F.softmax(output_fine,dim=1)
+                prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
+                loss_ce_coarse = F.nll_loss(torch.log(prob_coarse), target_coarse)
+                return representation, output_fine, loss_ce_coarse
+            else: 
+                representation, output_one = model(data)
+                loss_ce = criterion_ce(output_one, target_one)
             return representation, output_one, loss_ce
+
             # if 'MTL' in exp_name:
             #     representation, output_coarse, output_fine = model(data)
             #     loss_ce_coarse = criterion_ce(output_fine, target_fine)
@@ -245,7 +256,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
 
         epochs_no_improve = 0 
         min_val_loss = np.Inf
-        early_stop_patience = 10
+        early_stop_patience = 15
         epochs_durations = []
         
         for epoch in range(start_epoch, epochs):
@@ -291,8 +302,8 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 
                 if CPCC:
                     loss_cpcc = lamb * criterion_cpcc(representation, target_one)
-                    if is_emd == 4:
-                        elapsed_time_cpcc = criterion_cpcc.time
+                    # if is_emd == 4:
+                    #     elapsed_time_cpcc = criterion_cpcc.time
                     loss = loss_ce + loss_cpcc
                     train_losses_cpcc.append(loss_cpcc)
                 elif group:
@@ -310,21 +321,21 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 pred_one = prob_one.argmax(dim=1)
                 acc_one = pred_one.eq(target_one).flatten().tolist()
                 train_one_accs.extend(acc_one)
-                if is_emd == 4:
-                    total_func_time += elapsed_time_cpcc
+                # if is_emd == 4:
+                #     total_func_time += elapsed_time_cpcc
 
-                # prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
-                # pred_coarse = prob_coarse.argmax(dim=1)
-                # acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
-                # train_coarse_accs.extend(acc_coarse)
+                prob_coarse = get_layer_prob_from_fine(prob_one, coarse_targets_map)
+                pred_coarse = prob_coarse.argmax(dim=1)
+                acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
+                train_coarse_accs.extend(acc_coarse)
 
                 if idx % 100 == 1:
                     if not CPCC:
                         loss_cpcc = -1
                     if train_on_mid:
-                        print(f"Train Loss: {loss}, Acc_mid: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
+                        print(f"Train Loss: {loss}, Acc_mid: {sum(train_one_accs)/len(train_one_accs)}, Acc_coarse: {sum(train_coarse_accs)/len(train_coarse_accs)}, loss_cpcc: {loss_cpcc}")
                     else:
-                        print(f"Train Loss: {loss}, Acc_fine: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
+                        print(f"Train Loss: {loss}, Acc_fine: {sum(train_one_accs)/len(train_one_accs)}, Acc_coarse: {sum(train_coarse_accs)/len(train_coarse_accs)}, loss_cpcc: {loss_cpcc}")
                     if is_emd == 4:
                         current_time_checkpoint = datetime.now()
                         # 计算从上一个时间戳到现在的总时间
@@ -400,14 +411,14 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                     acc_one = pred_one.eq(target_one).flatten().tolist()
                     test_one_accs.extend(acc_one)
 
-                    # prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
-                    # pred_coarse = prob_coarse.argmax(dim=1)
-                    # acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
-                    # test_coarse_accs.extend(acc_coarse)
+                    prob_coarse = get_layer_prob_from_fine(prob_one, coarse_targets_map)
+                    pred_coarse = prob_coarse.argmax(dim=1)
+                    acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
+                    test_coarse_accs.extend(acc_coarse)
             
             t_end = datetime.now()
             t_delta = (t_end-t_start).total_seconds()
-            print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_one: {sum(test_one_accs)/len(test_one_accs)}")
+            print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_fine: {sum(test_one_accs)/len(test_one_accs)}, Acc_coarse: {sum(train_coarse_accs)/len(train_coarse_accs)}")
             print(f"Epoch {epoch} takes {t_delta} sec.")
             epochs_durations.append(t_delta)
 
@@ -737,7 +748,7 @@ def downstream_transfer(save_dir : str, seed : int, device : torch.device,
     model = init_model(dataset_name, [num_classes], device)
     
     model_dict = model.state_dict()
-    # load pretrained seed 0, call this function #seeds times
+    # load pretrained seed 0, call this function 
     trained_dict = {k: v for k, v in torch.load(save_dir+f"/split{task}_seed0.pth").items() if (k in model_dict) and ("fc" not in k)}
     model_dict.update(trained_dict) 
     model.load_state_dict(model_dict)
@@ -1093,6 +1104,13 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             dist_matrices = [all_pairwise[np.ix_(pair[0],pair[1])] for pair in combidx]
 
             acc_l2_dist = np.stack([ot.emd2(np.array([]), np.array([]), M) for M in dist_matrices])
+            # acc_l2_dist_origin = acc_l2_dist
+
+            # if is_emd == 2:
+            #     acc_l2_dist_origin = np.stack([SK.apply(M, reg, numItermax) for M in dist_matrices])
+            # elif is_emd == 7:
+            #     acc_l2_dist_origin = np.stack([SlicedWasserstein_np.apply(data[pair[0]], data[pair[1]], self.n_projections) for pair in combidx])
+            
             
 
             # if cpcc_metric == 'l2':
@@ -1323,6 +1341,8 @@ def main():
                 train_loader, test_loader = make_dataloader(num_workers, batch_size, 'in_split_pretrain', dataset_name, case, breeds_setting)
             pretrain_objective(train_loader, test_loader, device, save_dir, seed, split, cpcc, exp_name, epochs, task, dataset_name, breeds_setting, hyper)
             
+            if ss_test:
+                continue
             # down
             for level in ['mid','fine']: 
                 hyper = load_params(dataset_name, 'down', level, breeds_setting)
@@ -1335,6 +1355,16 @@ def main():
             train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting) # full
             pretrain_objective(train_loader, test_loader, device, save_dir, seed, split, cpcc, exp_name, epochs, task, dataset_name, breeds_setting, hyper)
 
+    if ss_test:
+        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting)
+        if dataset_name == 'MNIST':
+            levels = ['coarse']
+        else:
+            levels = ['coarsest','coarse'] 
+        downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
+        retrieve_final_metrics(test_loader, dataset_name)
+        return 
+    
     # Eval: zero-shot/ood
 
     if task == 'sub':
@@ -1377,18 +1407,20 @@ if __name__ == '__main__':
     parser.add_argument("--cpcc_metric", default='l2', type=str, help='distance metric in CPCC, l2/l1/poincare')
     parser.add_argument("--cpcc_list", nargs='+', default=['coarse'], help='ex: --cpcc-list mid coarse, for 3 layer cpcc')
     parser.add_argument("--group", default=0, type=int, help='0/1, grouplasso')
-    parser.add_argument("--case", type=int, help='Type of MNIST, 0/1')
+    parser.add_argument("--case", default=0, type=int, help='Type of MNIST, 0/1')
 
-    parser.add_argument("--train_on_mid", required=True, default=0, type=int, help='Train on fine or mid layer, 0/1')
-    parser.add_argument("--emd", required=True, default=0, type=int, help='0-Euclidean distance, 1-EMD, 2-Sinkhorn, 3-SmoothOT')
-    parser.add_argument("--reg", required=False, default=1, type=int, help='the regulization param of Sinkhorn or SmoothOT')
-    parser.add_argument("--numItermax", required=False, default=10000, type=int, help='numIterMax to run Sinkhorn or SmoothOT')
-    parser.add_argument("--n_projections", required=False, default=20, type=int, help='number of projections in SWD')
+    parser.add_argument("--train_on_mid", default=0, type=int, help='Train on fine or mid layer, 0/1')
+    parser.add_argument("--ss_test", default=0, type=int, help='Only Source train & Source test, 0/1')
+    parser.add_argument("--coarse_ce", default=0, type=int, help='Use coarse layer ce or not, 0/1')
+    parser.add_argument("--emd", default=0, type=int, help='0-Euclidean distance, 1-EMD, 2-Sinkhorn, 3-SmoothOT')
+    parser.add_argument("--reg", default=10, type=int, help='the regulization param of Sinkhorn or SmoothOT')
+    parser.add_argument("--numItermax", default=10000, type=int, help='numIterMax to run Sinkhorn or SmoothOT')
+    parser.add_argument("--n_projections", default=10, type=int, help='number of projections in SWD')
 
     parser.add_argument("--lamb",type=float,default=1,help='strength of CPCC regularization')
     
     parser.add_argument("--num_workers", type=int, default=12)
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--seeds", type=int,default=5)    
     
     args = parser.parse_args()
@@ -1404,6 +1436,8 @@ if __name__ == '__main__':
     group = args.group
     is_emd = args.emd
     train_on_mid = args.train_on_mid
+    ss_test = args.ss_test
+    coarse_ce = args.coarse_ce
     reg = args.reg
     numItermax = args.numItermax
 
