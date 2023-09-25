@@ -5,13 +5,13 @@ import numpy as np
 import cv2
 import ot
 from itertools import combinations
-from treeOT import *
+# from treeOT import *
 import time
 
 import random
 from typing import *
 from datetime import datetime
-import ot_estimators
+# import ot_estimators
 from ot.lp import wasserstein_1d
 from ot.utils import list_to_array
 from ot.backend import get_backend
@@ -137,9 +137,9 @@ class SK(torch.autograd.Function):
     @staticmethod
     def forward(ctx, M, reg, numItermax):
         m, n = M.shape
-        M_np = M.detach().cpu().numpy()
         a = np.full(m, 1 / m)
         b = np.full(n, 1 / n)
+        M_np = M.detach().cpu().numpy()
         flow = torch.tensor(ot.sinkhorn(a, b, M_np, reg=reg, numItermax=numItermax)).to(M.device)
         # flow = torch.tensor(np.random.rand(m,n)).to(M.device)
         emd = (M * flow).sum()
@@ -235,7 +235,10 @@ def smooth(M, reg):
 
 def sinkhorn(M, reg, numItermax):
     m, n = M.shape
-    M_np = M.detach().cpu().numpy()
+    if not isinstance(M, np.ndarray):
+        M_np = M.detach().cpu().numpy()
+    else:
+        M_np = M
     a = np.full(m, 1 / m)
     b = np.full(n, 1 / n)
 
@@ -486,6 +489,9 @@ def compute_flow_symmetric(a_sample, b_sample):
     # print('a_sample len:', a_sample.shape[0])
     # print('b_sample len:', b_sample.shape[0])
     start = time.time()
+    if isinstance(a_sample, np.ndarray):
+        a_sample = torch.as_tensor(a_sample)
+        b_sample = torch.as_tensor(b_sample)
     device = a_sample.device
     n, m = a_sample.shape[0], b_sample.shape[0]
     a = torch.full((n,), 1 / n, device=device)

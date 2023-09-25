@@ -13,7 +13,7 @@ import ot
 from itertools import combinations
 
 
-from sklearn.metrics import roc_auc_score, silhouette_score
+from sklearn.metrics import roc_auc_score, silhouette_score, average_precision_score
 from sklearn.mixture import GaussianMixture
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import pdist
@@ -36,7 +36,7 @@ import seaborn as sns
 
 from model import init_model
 from data import make_kshot_loader, make_dataloader
-from loss import CPCCLoss, QuadrupletLoss, GroupLasso, SK, SlicedWasserstein_np
+from loss import CPCCLoss, QuadrupletLoss, GroupLasso, SK, SlicedWasserstein_np, sinkhorn, compute_flow_symmetric
 from param import init_optim_schedule, load_params
 from utils import get_layer_prob_from_fine, seed_everything
 
@@ -84,6 +84,9 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
         if train_on_mid:
             classes = dataset.mid_names
             num_classes = [len(dataset.mid_names)]
+        elif coarse_ce:
+            classes = dataset.coarse_names
+            num_classes = [len(dataset.coarse_names)]
         else:
             classes = dataset.fine_names
         
@@ -134,7 +137,7 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
         
         config = {**init_config, **optim_config, **scheduler_config}        
 
-        torch.autograd.set_detect_anomaly(True)
+        # torch.autograd.set_detect_anomaly(True)
         if 'HXE' in exp_name:
             hierarchy = dataset.build_nltk_tree()
             alpha = 0.4
@@ -195,15 +198,15 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             '''
                 Helper to calculate non CPCC loss, also return representation and model raw output
             '''
-            if coarse_ce: 
-                representation, output_fine = model(data)
-                prob_fine = F.softmax(output_fine,dim=1)
-                prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
-                loss_ce_coarse = F.nll_loss(torch.log(prob_coarse), target_coarse)
-                return representation, output_fine, loss_ce_coarse
-            else: 
-                representation, output_one = model(data)
-                loss_ce = criterion_ce(output_one, target_one)
+            # if coarse_ce: 
+            #     representation, output_fine = model(data)
+            #     prob_fine = F.softmax(output_fine,dim=1)
+            #     prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
+            #     loss_ce_coarse = F.nll_loss(torch.log(prob_coarse), target_coarse)
+            #     return representation, output_fine, loss_ce_coarse
+            # else: 
+            representation, output_one = model(data)
+            loss_ce = criterion_ce(output_one, target_one)
             return representation, output_one, loss_ce
 
             # if 'MTL' in exp_name:
@@ -276,10 +279,11 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 # target_fine = target_fine.to(device)
                 if train_on_mid:
                     target_one = target_mid.to(device)
+                elif coarse_ce:
+                    target_one = target_coarse.to(device)
                 else:
                     target_one = target_fine.to(device)
                 target_coarse = target_coarse.to(device)
-
                 optimizer.zero_grad()
                 
                 if 'soft' in exp_name:
@@ -313,7 +317,6 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 else:
                     loss = loss_ce
                 train_losses_ce.append(loss_ce)
-                
                 loss.backward()
                 optimizer.step()
             
@@ -324,16 +327,19 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                 # if is_emd == 4:
                 #     total_func_time += elapsed_time_cpcc
 
-                prob_coarse = get_layer_prob_from_fine(prob_one, coarse_targets_map)
-                pred_coarse = prob_coarse.argmax(dim=1)
-                acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
-                train_coarse_accs.extend(acc_coarse)
+                if not coarse_ce:
+                    prob_coarse = get_layer_prob_from_fine(prob_one, coarse_targets_map)
+                    pred_coarse = prob_coarse.argmax(dim=1)
+                    acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
+                    train_coarse_accs.extend(acc_coarse)
 
                 if idx % 100 == 1:
                     if not CPCC:
                         loss_cpcc = -1
                     if train_on_mid:
                         print(f"Train Loss: {loss}, Acc_mid: {sum(train_one_accs)/len(train_one_accs)}, Acc_coarse: {sum(train_coarse_accs)/len(train_coarse_accs)}, loss_cpcc: {loss_cpcc}")
+                    elif coarse_ce:
+                        print(f"Train Loss: {loss}, Acc_coarse: {sum(train_one_accs)/len(train_one_accs)}, loss_cpcc: {loss_cpcc}")
                     else:
                         print(f"Train Loss: {loss}, Acc_fine: {sum(train_one_accs)/len(train_one_accs)}, Acc_coarse: {sum(train_coarse_accs)/len(train_coarse_accs)}, loss_cpcc: {loss_cpcc}")
                     if is_emd == 4:
@@ -376,6 +382,8 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                     # target_fine = target_fine.to(device)
                     if train_on_mid:
                         target_one = target_mid.to(device)
+                    elif coarse_ce:
+                        target_one = target_coarse.to(device)
                     else:
                         target_one = target_fine.to(device)
                     
@@ -405,20 +413,24 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                     else:
                         loss = loss_ce
                     test_losses_ce.append(loss_ce)
-                    
+
                     prob_one = F.softmax(output_one,dim=1)
                     pred_one = prob_one.argmax(dim=1)
                     acc_one = pred_one.eq(target_one).flatten().tolist()
                     test_one_accs.extend(acc_one)
 
-                    prob_coarse = get_layer_prob_from_fine(prob_one, coarse_targets_map)
-                    pred_coarse = prob_coarse.argmax(dim=1)
-                    acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
-                    test_coarse_accs.extend(acc_coarse)
+                    if not coarse_ce:
+                        prob_coarse = get_layer_prob_from_fine(prob_one, coarse_targets_map)
+                        pred_coarse = prob_coarse.argmax(dim=1)
+                        acc_coarse = pred_coarse.eq(target_coarse).flatten().tolist()
+                        test_coarse_accs.extend(acc_coarse)
             
             t_end = datetime.now()
             t_delta = (t_end-t_start).total_seconds()
-            print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_fine: {sum(test_one_accs)/len(test_one_accs)}, Acc_coarse: {sum(train_coarse_accs)/len(train_coarse_accs)}")
+            if coarse_ce:
+                print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_coarse: {sum(test_one_accs)/len(test_one_accs)}")
+            else:
+                print(f"Val loss_ce: {sum(test_losses_ce)/len(test_losses_ce)}, Acc_fine: {sum(test_one_accs)/len(test_one_accs)}, Acc_coarse: {sum(train_coarse_accs)/len(train_coarse_accs)}")
             print(f"Epoch {epoch} takes {t_delta} sec.")
             epochs_durations.append(t_delta)
 
@@ -436,6 +448,16 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             
             wandb.log(log_dict)
             val_loss = sum(test_losses_ce)/len(test_losses_ce)
+            
+            # in case of model val_loss never decrease after half way training
+            if epoch == (epochs // 2):
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': val_loss,
+                }, save_dir+'/best_model.pth')
+
             if val_loss < min_val_loss:
                 min_val_loss = val_loss
                 if epoch > (epochs // 2):
@@ -892,7 +914,7 @@ def downstream_transfer(save_dir : str, seed : int, device : torch.device,
     
     return model
 
-def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader, 
+def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_train_loader, 
                         target_test_loader, levels : List[str], exp_name, device, 
                         dataset_name):
     
@@ -936,6 +958,8 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
             else:
                 if train_on_mid:
                     model = init_model(dataset_name, [len(train_dataset.mid_names)], device)
+                elif coarse_ce:
+                    model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
                 else:
                     model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
             model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
@@ -963,9 +987,11 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
                         _, _, output_fine = model(data)
                     else:
                         _, output_one = model(data)
+                    
+                    # TODO: double check coarse case
                     prob_one = F.softmax(output_one,dim=1)
                     pred_one = prob_one.argmax(dim=1, keepdim=False)
-                    if (level == 'fine' and train_on_mid == 0) or (level == 'mid' and train_on_mid == 1):
+                    if (level == 'fine' and train_on_mid == 0) or (level == 'mid' and train_on_mid == 1) or coarse_ce:
                         pred_layer = pred_one
                     else:
                         prob_layer = get_layer_prob_from_fine(prob_one, layer_fine_map)
@@ -977,16 +1003,87 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, source_train_loader
         
         zero_shot[level] = {'value' : level_res, 'mean' : np.average(level_res), 'std' : np.std(level_res)}
     
-    with open(save_dir+f'/{split}{task}_zero_shot.json', 'w') as fp:
+    with open(save_dir+f'/{save_name}.json', 'w') as fp: 
         json.dump(zero_shot, fp, indent=4)
     print(zero_shot)
     
     return layer_accs
 
+def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader, 
+                        test_loader, exp_name, device, 
+                        dataset_name):
+    # check precision/recall
+    # plot knn top 10 images, save top 10 id
+    train_dataset = train_loader.dataset 
+    
+    if cpcc:
+        exp_name = exp_name + 'CPCC'
+    
+    mAPs = []
+
+    # load model trained on coarse class
+    for seed in range(seeds):
+        model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
+        model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+        model.eval()
+    
+        aps = []
+        prototypes = {i:[] for i in range(len(train_dataset.coarse_names))}
+        test_scores = {i:[] for i in range(len(train_dataset.coarse_names))} # cosine scores sorted by id in the dataset
+        test_truth = {i:[] for i in range(len(train_dataset.coarse_names))}
+
+        with torch.no_grad():
+            for item in train_loader:
+                data = item[0].to(device)
+                target_coarse = item[-3]
+                feature, _ = model(data)
+                feature = feature.cpu().detach().numpy()
+                for it, t in enumerate(target_coarse):
+                    prototypes[t.item()].append(feature[it])
+            
+            # for each coarse class, calculate train representation mean
+            for i in range(len(train_dataset.coarse_names)):
+                prototypes[i] = np.mean(np.stack(prototypes[i],axis=0),axis=0)
+
+            # calculate cosine similarity of the train representation mean and test images embedding
+            # and generate ground truth
+            for item in test_loader:
+                data = item[0].to(device)
+                target_coarse = item[-3]
+                test_embs,_ = model(data)
+                test_embs = test_embs.cpu().detach().numpy()
+                for it, t in enumerate(target_coarse):
+                    test_emb = test_embs[it]
+                    for i in range(len(train_dataset.coarse_names)):
+                        test_scores[i].append(np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i])))
+                        test_truth[i].append(int(t.item() == i))
+            
+            # for each coarse class, get AP
+            for i in range(len(train_dataset.coarse_names)):
+                aps.append(average_precision_score(test_truth[i], test_scores[i]))
+
+            # average to get mAP
+            mAP = np.mean(aps)
+            mAPs.append(mAP)
+
+            # TODO: for each coarse class plot top k image, decide k later
+            if seed == 0:
+                pass
+    
+    out = dict()
+    out['mAP'] = mAPs
+    out['mean'] = np.average(mAPs)
+    out['std'] = np.std(mAPs)
+    with open(save_dir+f'/{task_name}_mAPs.json', 'w') as fp:
+        json.dump(out, fp, indent=4)
+    return out
+
 def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_name : str, seed : int):
     dataset = dataloader.dataset
     if train_on_mid:
         model = init_model(dataset_name, [len(dataset.mid_names)], device)
+    elif coarse_ce:
+        model = init_model(dataset_name, [len(dataset.coarse_names)], device)
     else:  
         model = init_model(dataset_name, [len(dataset.fine_names)], device)
     # model = init_model(dataset_name, [len(dataset.fine_names)], device)
@@ -995,7 +1092,6 @@ def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_
     ckpt_dict = {k: v for k, v in torch.load(save_dir+f"/{split}{task}_seed{seed}.pth").items() if (k in model_dict) and ('fc' not in k)}
     model_dict.update(ckpt_dict) 
     model.load_state_dict(model_dict)
-    model.module.fc = nn.Identity()
 
     features = []
     probs = []
@@ -1008,15 +1104,23 @@ def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_
             # target_one = item[-1]
             if train_on_mid:
                 target_one = item[-2]
-            else:
-                target_one = item[-1]
+            elif coarse_ce:
+                target_fine = item[-1]
+                target_one = item[-3]
+            else: 
+                target_one = item[-1] # add fine target
             data = data.to(device)
             target_one = target_one.to(device)
+            if coarse_ce:
+                target_fine = target_fine.to(device)
             feature, output = model(data)
             prob_one = F.softmax(output,dim=1)
             probs.append(prob_one.cpu().detach().numpy())
             features.append(feature.cpu().detach().numpy())
-            targets_one.append(target_one.cpu().detach().numpy())
+            if coarse_ce:
+                targets_one.append(target_fine.cpu().detach().numpy()) # switch coarse/fine
+            else:
+                targets_one.append(target_one.cpu().detach().numpy())
             if len(item) == 5:
                 target_coarse = item[2]
                 target_coarse = target_coarse.to(device)
@@ -1073,7 +1177,7 @@ def ood_detection(seeds : int, dataset_name : str, exp_name : str):
     print(out)
     return oods
 
-def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
+def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_name : str):
     
     def fullCPCC(dataL, targets_fineL, fine2coarse : list):
         '''
@@ -1087,7 +1191,7 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             den = (1 - (sum(proj_x**2))) * (1 - (sum(proj_y**2)))
             return np.arccosh(num/den)
 
-        all_seed_res = []
+        all_seed_res = {'L2-CPCC':[],'EMD-CPCC':[],'self-CPCC':[]}
         for (data, targets_fine) in zip(dataL, targets_fineL):
             df_fine = pd.concat([pd.DataFrame(data), pd.Series(targets_fine, name='target')], axis = 1)
             mean_df_fine = df_fine.groupby(['target']).mean()
@@ -1099,9 +1203,10 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             all_pairwise = cdist(data, data)
             target_indices = [np.where(targets_fine == fine)[0] for fine in all_fine]
             combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
+            data_slice_pairs = [(data[pair[0]],data[pair[1]]) for pair in combidx]
             dist_matrices = [all_pairwise[np.ix_(pair[0],pair[1])] for pair in combidx]
 
-            acc_l2_dist = np.stack([ot.emd2(np.array([]), np.array([]), M) for M in dist_matrices])
+            
             # acc_l2_dist_origin = acc_l2_dist
 
             # if is_emd == 2:
@@ -1117,17 +1222,48 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             #     acc_l2_dist = pdist(np.array(mean_df_fine),metric='cityblock') 
             # elif cpcc_metric == 'poincare':
             #     acc_l2_dist = pdist(np.array(mean_df_fine),metric=poincareFn)
+            
+            # Check Gaussian
+            acc_l2_dist = pdist(np.array(mean_df_fine),metric='euclidean') 
             mean_l2_dist = np.average(acc_l2_dist)
+            l2_numerator = np.dot((acc_l2_dist - mean_l2_dist),(acc_tree_dist - mean_tree_dist))
+            l2_denominator = (np.sum((acc_l2_dist - mean_l2_dist)**2) * np.sum((acc_tree_dist - mean_tree_dist)**2))**0.5
+            all_seed_res['L2-CPCC'].append(l2_numerator/l2_denominator)
 
-            numerator = np.dot((acc_l2_dist - mean_l2_dist),(acc_tree_dist - mean_tree_dist))
-            denominator = (np.sum((acc_l2_dist - mean_l2_dist)**2) * np.sum((acc_tree_dist - mean_tree_dist)**2))**0.5
+            # Check Approximation
+            acc_emd_dist = np.stack([ot.emd2(np.array([]), np.array([]), M) for M in dist_matrices])
+            mean_emd_dist = np.average(acc_emd_dist)
+            emd_numerator = np.dot((acc_emd_dist - mean_emd_dist),(acc_tree_dist - mean_tree_dist))
+            emd_denominator = (np.sum((acc_emd_dist - mean_emd_dist)**2) * np.sum((acc_tree_dist - mean_tree_dist)**2))**0.5
+            all_seed_res['EMD-CPCC'].append(emd_numerator/emd_denominator)
 
-            all_seed_res.append(numerator/denominator)
-        out = dict()
-        out['CPCC'] = all_seed_res
-        out['mean'] = np.average(all_seed_res)
-        out['std'] = np.std(all_seed_res)
-        with open(save_dir+f'/{split}{task}_CPCC.json', 'w') as fp:
+            # Check Generalization
+            if cpcc == False:
+                acc_self_dist = acc_l2_dist 
+            else:
+                if is_emd == 0:
+                    acc_self_dist = acc_l2_dist 
+                elif is_emd == 1:
+                    acc_self_dist = acc_emd_dist 
+                elif is_emd == 2: # sinkhorn
+                    acc_self_dist = np.stack([sinkhorn(M, reg, numItermax).numpy() for M in dist_matrices])
+                elif is_emd == 7: # SWD
+                    acc_self_dist = np.stack([ot.sliced_wasserstein_distance(X_s, X_t, n_projections=n_projections, seed=0) for X_s, X_t in data_slice_pairs])
+                elif is_emd == 9: # TWD
+                    acc_self_dist = np.stack([compute_flow_symmetric(X_s, X_t).numpy() for X_s, X_t in data_slice_pairs])
+            mean_self_dist = np.average(acc_self_dist)
+            self_numerator = np.dot((acc_self_dist - mean_self_dist),(acc_tree_dist - mean_tree_dist))
+            self_denominator = (np.sum((acc_self_dist - mean_self_dist)**2) * np.sum((acc_tree_dist - mean_tree_dist)**2))**0.5
+            all_seed_res['self-CPCC'].append(self_numerator/self_denominator)
+
+        out = all_seed_res
+        out['L2-mean'] = np.average(all_seed_res['L2-CPCC'])
+        out['L2-std'] = np.std(all_seed_res['L2-CPCC'])
+        out['EMD-mean'] = np.average(all_seed_res['L2-CPCC'])
+        out['EMD-std'] = np.std(all_seed_res['L2-CPCC'])
+        out['self-mean'] = np.average(all_seed_res['self-CPCC'])
+        out['self-std'] = np.std(all_seed_res['self-CPCC'])
+        with open(save_dir+f'/{task_name}_CPCC.json', 'w') as fp:
             json.dump(out, fp, indent=4)
         return out
 
@@ -1143,7 +1279,7 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
         out['silhouette'] = all_seed_res
         out['mean'] = np.average(all_seed_res)
         out['std'] = np.std(all_seed_res)
-        with open(save_dir+f'/{split}{task}_silhouette.json', 'w') as fp:
+        with open(save_dir+f'/{task_name}_silhouette.json', 'w') as fp:
             json.dump(out, fp, indent=4)
         return out
 
@@ -1300,7 +1436,7 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str):
             ax.axis('off')
             plt.savefig(save_dir+f"/TSNE_seed{seed}.pdf")
             plt.clf()
-    
+
     dataL, probL, targets_oneL, targets_coarseL = [],[],[],[]
     for seed in range(seeds):
         data, prob, targets_one, targets_coarse = feature_extractor(test_loader, split, task, dataset_name, seed)
@@ -1355,12 +1491,16 @@ def main():
 
     if ss_test:
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting)
-        if dataset_name == 'MNIST':
-            levels = ['coarse']
-        else:
-            levels = ['coarsest','coarse'] 
-        downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
-        retrieve_final_metrics(test_loader, dataset_name)
+        levels = ['coarse'] # Let' simplify all exps for now
+        downstream_zeroshot(seeds, save_dir, split, task, 'sub_split_pretrain', train_loader, test_loader, levels, exp_name, device, dataset_name)
+        retrieve_final_metrics(test_loader, dataset_name, 'sub_split_pretrain')
+        retrieval_similarity(seeds, save_dir, split, task, 'sub_split_pretrain', train_loader, test_loader, exp_name, device, dataset_name)
+
+        # st downstream zero shot
+        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_zero_shot', dataset_name, case, breeds_setting)
+        downstream_zeroshot(seeds, save_dir, split, task, 'sub_split_zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
+        retrieval_similarity(seeds, save_dir, split, task, 'sub_split_zero_shot', train_loader, test_loader, exp_name, device, dataset_name)
+
         return 
     
     # Eval: zero-shot/ood

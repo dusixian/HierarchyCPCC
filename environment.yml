@@ -1,4 +1,4 @@
-name: hierarchy
+name: otCPCC
 channels:
   - defaults
 dependencies:
