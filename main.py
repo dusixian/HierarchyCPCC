@@ -257,9 +257,9 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             start_epoch = checkpoint['epoch'] + 1
             print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
 
-        epochs_no_improve = 0 
-        min_val_loss = np.Inf
-        early_stop_patience = 15
+        # epochs_no_improve = 0 
+        # min_val_loss = np.Inf
+        # early_stop_patience = 15
         epochs_durations = []
         
         for epoch in range(start_epoch, epochs):
@@ -449,50 +449,50 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             wandb.log(log_dict)
             val_loss = sum(test_losses_ce)/len(test_losses_ce)
             
-            # in case of model val_loss never decrease after half way training
-            if epoch == (epochs // 2):
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': val_loss,
-                }, save_dir+'/best_model.pth')
+            # # in case of model val_loss never decrease after half way training
+            # if epoch == (epochs // 2):
+            #     torch.save({
+            #         'epoch': epoch,
+            #         'model_state_dict': model.state_dict(),
+            #         'optimizer_state_dict': optimizer.state_dict(),
+            #         'loss': val_loss,
+            #     }, save_dir+'/best_model.pth')
 
-            if val_loss < min_val_loss:
-                min_val_loss = val_loss
-                if epoch > (epochs // 2):
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': val_loss,
-                    }, save_dir+'/best_model.pth')
+            # if val_loss < min_val_loss:
+            #     min_val_loss = val_loss
+            #     if epoch > (epochs // 2):
+            #         torch.save({
+            #             'epoch': epoch,
+            #             'model_state_dict': model.state_dict(),
+            #             'optimizer_state_dict': optimizer.state_dict(),
+            #             'loss': val_loss,
+            #         }, save_dir+'/best_model.pth')
 
-                    epochs_no_improve = 0 
+            #         epochs_no_improve = 0 
 
-            else:
-                if epoch > (epochs // 2):
-                    epochs_no_improve += 1
-                    if epochs_no_improve > early_stop_patience:
-                        print('Early stopping!')
-                        break
+            # else:
+            #     if epoch > (epochs // 2):
+            #         epochs_no_improve += 1
+            #         if epochs_no_improve > early_stop_patience:
+            #             print('Early stopping!')
+            #             break
         
 
-        checkpoint = torch.load(save_dir+'/best_model.pth')
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # checkpoint = torch.load(save_dir+'/best_model.pth')
+        # model.load_state_dict(checkpoint['model_state_dict'])
         torch.save(model.state_dict(), out_dir)
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         wandb.finish()
 
         avg_epoch_duration = sum(epochs_durations) / len(epochs_durations)
         print(f"Average epoch duration: {avg_epoch_duration} sec.")
-        print(f"Best val loss: {checkpoint['loss']}, at epoch {checkpoint['epoch']}")
+        # print(f"Best val loss: {checkpoint['loss']}, at epoch {checkpoint['epoch']}")
 
         # Log to file
         with open(save_dir+f'/training_log_{seed}.txt', 'w') as f:
             f.write(f"Average epoch duration: {avg_epoch_duration} sec.\n")
-            f.write(f"Best val loss: {checkpoint['loss']}, at epoch {checkpoint['epoch']}\n")
-            f.write(f"epochs_durations: {epochs_durations} \n")
+            # f.write(f"Best val loss: {checkpoint['loss']}, at epoch {checkpoint['epoch']}\n")
+            # f.write(f"epochs_durations: {epochs_durations} \n")
 
         return model
 
@@ -1524,8 +1524,8 @@ def main():
                 levels = ['coarsest','coarse','mid','fine']
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting)
     
-    downstream_zeroshot(seeds, save_dir, split, task, train_loader, test_loader, levels, exp_name, device, dataset_name)
-    retrieve_final_metrics(test_loader, dataset_name)
+    downstream_zeroshot(seeds, save_dir, split, task, 'zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
+    retrieve_final_metrics(test_loader, dataset_name, 'zero_shot')
     # if (dataset_name == 'CIFAR') and (split == 'full'):
     #     ood_detection(seeds, dataset_name, exp_name)
     
