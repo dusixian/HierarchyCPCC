@@ -1259,8 +1259,8 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
         out = all_seed_res
         out['L2-mean'] = np.average(all_seed_res['L2-CPCC'])
         out['L2-std'] = np.std(all_seed_res['L2-CPCC'])
-        out['EMD-mean'] = np.average(all_seed_res['L2-CPCC'])
-        out['EMD-std'] = np.std(all_seed_res['L2-CPCC'])
+        out['EMD-mean'] = np.average(all_seed_res['EMD-CPCC'])
+        out['EMD-std'] = np.std(all_seed_res['EMD-CPCC'])
         out['self-mean'] = np.average(all_seed_res['self-CPCC'])
         out['self-std'] = np.std(all_seed_res['self-CPCC'])
         with open(save_dir+f'/{task_name}_CPCC.json', 'w') as fp:
