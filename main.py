@@ -758,7 +758,7 @@ def downstream_transfer(save_dir : str, seed : int, device : torch.device,
         return
 
     train_loader, test_loader = make_kshot_loader(num_workers, batch_size, 1, level, 
-                                                task, seed, dataset_name, case, breeds_setting) # we use one shot on train set, tt dataloader
+                                                task, seed, dataset_name, case, breeds_setting, difficulty) # we use one shot on train set, tt dataloader
     dataset = train_loader.dataset.dataset # loader contains Subset
     if level == 'fine':
         num_classes = len(dataset.fine_names)
@@ -927,7 +927,7 @@ def retrieve_downstream_metrics(save_dir : str, seed : int, device : torch.devic
                                 dataset_name : str, case : int, breeds_setting : str):
 
     train_loader, test_loader = make_kshot_loader(num_workers, batch_size, 1, level, 
-                                                task, seed, dataset_name, case, breeds_setting)
+                                                task, seed, dataset_name, case, breeds_setting, difficulty)
     dataset = train_loader.dataset.dataset
 
     metrics = {
@@ -1026,25 +1026,15 @@ def retrieve_downstream_metrics(save_dir : str, seed : int, device : torch.devic
         metrics["val_top2"].append(test_top2/test_size)
         metrics["val_losses"].append(np.mean(test_losses))
 
-    with open(save_dir + "downstream_metrics.txt", "w") as f:
-        for key, values in metrics.items():
-            mean = np.mean(values)
-            std = np.std(values)
-            f.write(f"{key}: Mean = {mean}, Std = {std}\n")
-            print('downstream down')
-
-def get_target_by_level(level, target_coarsest, target_coarse, target_mid, target_fine):
-    if level == 'coarsest':
-        return target_coarsest
-    elif level == 'mid':
-        return target_mid
-    elif level == 'coarse':
-        return target_coarse
-    elif level == 'fine':
-        return target_fine
-
-# 使用示例
-# retrieve_downstream_metrics(save_dir, seeds, task, level, train_loader, test_loader, device)
+    metrics_summary = {
+        key: {
+            "values": values,
+            "mean": np.mean(values),
+            "std": np.std(values)
+        } for key, values in metrics.items()
+    }
+    with open(save_dir + "/downstream_metrics.json", "w") as f:
+        json.dump(metrics_summary, f, indent=4)
 
 
 def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_train_loader, 
@@ -1190,6 +1180,7 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
         test_scores = {i:[] for i in range(len(train_dataset.coarse_names))} # cosine scores sorted by id in the dataset
         test_truth = {i:[] for i in range(len(train_dataset.coarse_names))}
         retrieval_results = []
+        all_target_coarse = []
 
         with torch.no_grad():
             for item in train_loader:
@@ -1216,6 +1207,7 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             for item in test_loader:
                 data = item[0].to(device)
                 target_coarse = item[-3]
+                all_target_coarse.extend(target_coarse.cpu().numpy())
                 test_embs,_ = model(data)
                 test_embs = test_embs.cpu().detach().numpy()
                 for it, t in enumerate(target_coarse):
@@ -1237,8 +1229,8 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             mAPs.append(mAP)
 
             # Calculate precision and recall
-            precision = precision_score(target_coarse.cpu().numpy(), retrieval_results, average='macro')
-            recall = recall_score(target_coarse.cpu().numpy(), retrieval_results, average='macro')
+            precision = precision_score(all_target_coarse, retrieval_results, average='macro')
+            recall = recall_score(all_target_coarse, retrieval_results, average='macro')
             precisions.append(precision)
             recalls.append(recall)
 
@@ -1716,39 +1708,39 @@ def main():
         return 
 
     if dataset_name == 'CIFAR12':
-        # train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
-        # retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
+        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
+        retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
         retrieve_downstream_metrics(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
     
     # Eval: zero-shot/ood
 
-    # if task == 'sub':
-    #     if dataset_name == 'MNIST' or dataset_name == 'CIFAR12':
-    #         levels = ['coarse']
-    #     else:
-    #         levels = ['coarsest','coarse'] 
-    #     train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
-    #     if dataset_name == 'CIFAR12':
-    #         retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
-    # elif task == '': # full
-    #     if dataset_name == 'MNIST':
-    #         if train_on_mid:
-    #             levels = ['coarse','mid'] 
-    #         else:
-    #             levels = ['coarse','mid','fine'] 
-    #     else:
-    #         if train_on_mid:
-    #             levels = ['coarsest','coarse','mid']
-    #         else:
-    #             levels = ['coarsest','coarse','mid','fine']
-    #     train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting, difficulty)
+    if task == 'sub':
+        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12':
+            levels = ['coarse']
+        else:
+            levels = ['coarsest','coarse'] 
+        train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
+        if dataset_name == 'CIFAR12':
+            retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
+    elif task == '': # full
+        if dataset_name == 'MNIST':
+            if train_on_mid:
+                levels = ['coarse','mid'] 
+            else:
+                levels = ['coarse','mid','fine'] 
+        else:
+            if train_on_mid:
+                levels = ['coarsest','coarse','mid']
+            else:
+                levels = ['coarsest','coarse','mid','fine']
+        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting, difficulty)
     
-    # downstream_zeroshot(seeds, save_dir, split, task, 'zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
-    # retrieve_final_metrics(test_loader, dataset_name, 'zero_shot')
+    downstream_zeroshot(seeds, save_dir, split, task, 'zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
+    retrieve_final_metrics(test_loader, dataset_name, 'zero_shot')
 
     # if (dataset_name == 'CIFAR') and (split == 'full'):
-    # if dataset_name == 'CIFAR12':
-    #     ood_detection(seeds, dataset_name, exp_name)
+    if dataset_name == 'CIFAR12':
+        ood_detection(seeds, dataset_name, exp_name)
     
     return
 

@@ -140,7 +140,7 @@ def make_dataloader(num_workers : int, batch_size : int, task : str, difficulty 
             train_dataset, test_dataset = target_train, target_test
         return train_dataset, test_dataset
 
-    def make_outlier_dataset() -> Tuple[Dataset, Dataset]:
+    def make_outlier_dataset(difficulty) -> Tuple[Dataset, Dataset]:
         train_dataset = CIFAR12(train=True, split="ood", difficulty=difficulty)
         test_dataset = CIFAR12(train=False, split="ood", difficulty=difficulty)
         return train_dataset, test_dataset
