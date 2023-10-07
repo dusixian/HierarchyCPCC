@@ -4,12 +4,13 @@ from typing import *
 
 from hierarchy.data import get_k_shot
 import cifar.data as cifar
+import cifar12.data as cifar12
 import mnist.data as mnist
 import breeds.data as breeds
 
 
 def make_kshot_loader(num_workers : int, batch_size : int, k : int, layer : str, 
-                      task : str, seed : int, dataset : str, case : int, breeds_setting : str) -> Tuple[DataLoader, DataLoader]:
+                      task : str, seed : int, dataset : str, case : int, breeds_setting : str, difficulty : str = 'medium') -> Tuple[DataLoader, DataLoader]:
     '''
     Prepare one-shot train loader and full test loader. In train dataset, we have k
     image for each class (of indicated layer) in train set.
@@ -23,9 +24,9 @@ def make_kshot_loader(num_workers : int, batch_size : int, k : int, layer : str,
     # we use one shot setting only for target hierarchy
     # where we have to fine tune because of distribution shift at fine level
     if task == 'sub':
-        train_dataloader, test_dataloader = make_dataloader(num_workers, batch_size, 'sub_split_downstream', dataset, case, breeds_setting)
+        train_dataloader, test_dataloader = make_dataloader(num_workers, batch_size, 'sub_split_downstream', dataset, case, breeds_setting, difficulty)
     elif task == 'in':
-        train_dataloader, test_dataloader = make_dataloader(num_workers, batch_size, 'in_split_downstream', dataset, case, breeds_setting)
+        train_dataloader, test_dataloader = make_dataloader(num_workers, batch_size, 'in_split_downstream', dataset, case, breeds_setting, difficulty)
     train_subset, _ = get_k_shot(k, train_dataloader.dataset, layer, seed)
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, 
                                 pin_memory=False, num_workers=num_workers)
@@ -35,7 +36,7 @@ def make_kshot_loader(num_workers : int, batch_size : int, k : int, layer : str,
     return dataloaders
 
 def make_dataloader(num_workers : int, batch_size : int, task : str, dataset : str, 
-                    case = None, breeds_setting : str = None) -> Tuple[DataLoader, DataLoader]:
+                    case = None, breeds_setting : str = None, difficulty: str = "medium") -> Tuple[DataLoader, DataLoader]:
     '''
     Creat (a subset of) train test dataloader. Train & test has the same number of classes.
     Args:
@@ -52,6 +53,10 @@ def make_dataloader(num_workers : int, batch_size : int, task : str, dataset : s
         train_loader, test_loader = mnist.make_dataloader(num_workers, batch_size, task, case)
     elif dataset == 'CIFAR':
         train_loader, test_loader = cifar.make_dataloader(num_workers, batch_size, task)
+    elif dataset == 'CIFAR12':
+        if difficulty is None:
+            raise ValueError("Please specify --difficulty")
+        train_loader, test_loader = cifar12.make_dataloader(num_workers, batch_size, task, difficulty)
     elif dataset == 'BREEDS':
         if breeds_setting is None:
             raise ValueError("Please specify --breeds_setting as any of living17 | entity13 | entity30 | nonliving26")

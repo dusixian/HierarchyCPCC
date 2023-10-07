@@ -546,6 +546,7 @@ def compute_flow_symmetric(a_sample, b_sample):
     index_2 = index_2[:k]
     distances = torch.norm(a_sample[index_1] - b_sample[index_2], dim=1)
     # print('the time is : ', time.time() - start)
+    # print(torch.sum(distances * compressed_flow[:k]))
     return torch.sum(distances * compressed_flow[:k])
 
 
@@ -589,17 +590,20 @@ class CPCCLoss(nn.Module):
         # assume we only consider two level, fine and coarse
         # where fine and coarse always of the same height
         all_fine = torch.unique(target_fine)
+        # print("representations.shape: ", representations.shape)
         
         if self.is_emd > 0:
             pairwise_dist = []
             all_pairwise = torch.cdist(representations, representations)
             representations_np = representations.detach().cpu().numpy()
             target_indices = [torch.where(target_fine == fine)[0] for fine in all_fine]
+            # print('len(target_indices): ', len(target_indices))
             combidx = [(target_indices[i], target_indices[j]) for (i,j) in combinations(range(len(all_fine)),2)]
             if self.is_emd != 6 and self.is_emd != 7 and self.is_emd != 8 and self.is_emd != 9:
                 dist_matrices = [all_pairwise.index_select(0,pair[0]).index_select(1,pair[1]) for pair in combidx]
-
-            if self.is_emd == 1: # original EMD
+            if not combidx:
+                pairwise_dist = torch.tensor([])
+            elif self.is_emd == 1: # original EMD
                 pairwise_dist = torch.stack([OTEMDFunction.apply(M) for M in dist_matrices])
             elif self.is_emd == 2: # sinkhorn
                 # pairwise_dist = torch.stack([sinkhorn(M, self.reg, self.numItermax) for M in dist_matrices])
@@ -636,7 +640,7 @@ class CPCCLoss(nn.Module):
                 print("pairwise_dist: ", pairwise_dist)
                 print("pairwise_dist2: ", torch.stack([OTEMDFunction.apply(M) for M in dist_matrices]))
                 assert(0==1)
-                
+                    
         else: # use Euclidean distance
             # get the center of all fine classes
             target_fine_list = [torch.mean(torch.index_select(representations, 0, (target_fine == t).nonzero().flatten()),0) for t in all_fine]

@@ -14,6 +14,7 @@ from itertools import combinations
 
 
 from sklearn.metrics import roc_auc_score, silhouette_score, average_precision_score
+from sklearn.metrics import precision_score, recall_score
 from sklearn.mixture import GaussianMixture
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import pdist
@@ -750,8 +751,14 @@ def downstream_transfer(save_dir : str, seed : int, device : torch.device,
     '''
         Transfer to target sets on new level.
     '''
+    out_dir = save_dir+f"/down{task}_{level}_seed{seed}.pth"
+
+    if os.path.exists(out_dir):
+        print("Skipped.")
+        return
+
     train_loader, test_loader = make_kshot_loader(num_workers, batch_size, 1, level, 
-                                                task, seed, dataset_name, case, breeds_setting) # we use one shot on train set
+                                                task, seed, dataset_name, case, breeds_setting) # we use one shot on train set, tt dataloader
     dataset = train_loader.dataset.dataset # loader contains Subset
     if level == 'fine':
         num_classes = len(dataset.fine_names)
@@ -914,6 +921,132 @@ def downstream_transfer(save_dir : str, seed : int, device : torch.device,
     
     return model
 
+def retrieve_downstream_metrics(save_dir : str, seed : int, device : torch.device, 
+                                batch_size : int, level : str, CPCC : bool,
+                                exp_name : str, num_workers : int, task : str, 
+                                dataset_name : str, case : int, breeds_setting : str):
+
+    train_loader, test_loader = make_kshot_loader(num_workers, batch_size, 1, level, 
+                                                task, seed, dataset_name, case, breeds_setting)
+    dataset = train_loader.dataset.dataset
+
+    metrics = {
+        "train_top1": [],
+        "train_top2": [],
+        "train_losses": [],
+        "val_top1": [],
+        "val_top2": [],
+        "val_losses": []
+    }
+
+    criterion = torch.nn.CrossEntropyLoss().to(device)
+
+    for seed in range(seeds):
+        model_path = save_dir + f"/down{task}_{level}_seed{seed}.pth"
+        if level == 'fine':
+            num_classes = len(dataset.fine_names)
+        elif level == 'mid':
+            num_classes = len(dataset.mid_names)
+        elif level == 'coarse':
+            num_classes = len(dataset.coarse_names)
+        elif level == 'coarsest':
+            num_classes = len(dataset.coarsest_names)
+        train_size = len(train_loader.dataset)
+        test_size = len(test_loader.dataset)
+        criterion = nn.CrossEntropyLoss().to(device) # no CPCC in downstream task
+        
+        model = init_model(dataset_name, [num_classes], device)
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
+
+        train_top1, train_top2, test_top1, test_top2 = 0, 0, 0, 0
+        train_losses, test_losses = [], []
+
+        for data, target_coarsest, target_coarse, target_mid, target_fine in train_loader:
+            data = data.to(device)
+            target_coarse = target_coarse.to(device)
+            target_fine = target_fine.to(device)
+            target_mid = target_mid.to(device)
+            target_coarsest = target_coarsest.to(device)
+
+            if level == 'coarsest':
+                target = target_coarsest
+            elif level == 'mid':
+                target = target_mid
+            elif level == 'coarse':
+                target = target_coarse
+            elif level == 'fine':
+                target = target_fine
+
+            _, output = model(data)
+            loss = criterion(output, target)
+            train_losses.append(loss.item())
+            prob = F.softmax(output, dim=1)
+
+            pred1 = prob.argmax(dim=1, keepdim=False)
+            train_top1 += pred1.eq(target).sum().item()
+
+            pred2 = (prob.topk(k=2, dim=1)[1]).T
+            target_reshaped = target.unsqueeze(0).expand_as(pred2)
+            train_top2 += pred2.eq(target_reshaped).sum().item()
+
+        with torch.no_grad():
+            for data, target_coarsest, target_coarse, target_mid, target_fine in test_loader:
+                data = data.to(device)
+                target_coarse = target_coarse.to(device)
+                target_fine = target_fine.to(device)
+                target_mid = target_mid.to(device)
+                target_coarsest = target_coarsest.to(device)
+
+                if level == 'coarsest':
+                    target = target_coarsest
+                elif level == 'mid':
+                    target = target_mid
+                elif level == 'coarse':
+                    target = target_coarse
+                elif level == 'fine':
+                    target = target_fine
+
+                _, output = model(data)
+                loss = criterion(output, target)
+                test_losses.append(loss.item())
+                prob = F.softmax(output, dim=1)
+                pred1 = prob.argmax(dim=1, keepdim=False)
+                test_top1 += pred1.eq(target).sum().item()
+                pred2 = (prob.topk(k=2, dim=1)[1]).T
+                target_reshaped = target.unsqueeze(0).expand_as(pred2)
+                test_top2 += pred2.eq(target_reshaped).sum().item()
+
+        train_size = len(train_loader.dataset)
+        test_size = len(test_loader.dataset)
+        metrics["train_top1"].append(train_top1/train_size)
+        metrics["train_top2"].append(train_top2/train_size)
+        metrics["train_losses"].append(np.mean(train_losses))
+        metrics["val_top1"].append(test_top1/test_size)
+        metrics["val_top2"].append(test_top2/test_size)
+        metrics["val_losses"].append(np.mean(test_losses))
+
+    with open(save_dir + "downstream_metrics.txt", "w") as f:
+        for key, values in metrics.items():
+            mean = np.mean(values)
+            std = np.std(values)
+            f.write(f"{key}: Mean = {mean}, Std = {std}\n")
+            print('downstream down')
+
+def get_target_by_level(level, target_coarsest, target_coarse, target_mid, target_fine):
+    if level == 'coarsest':
+        return target_coarsest
+    elif level == 'mid':
+        return target_mid
+    elif level == 'coarse':
+        return target_coarse
+    elif level == 'fine':
+        return target_fine
+
+# 使用示例
+# retrieve_downstream_metrics(save_dir, seeds, task, level, train_loader, test_loader, device)
+
+
 def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_train_loader, 
                         target_test_loader, levels : List[str], exp_name, device, 
                         dataset_name):
@@ -1009,6 +1142,22 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_t
     
     return layer_accs
 
+def plot_top_k_images(query_image, retrieved_images, query_idx, save_dir, k=5):
+    """
+    Plot the query image and the top-k retrieved images and save them to the specified directory.
+    """
+    plt.figure(figsize=(15, 5))
+    plt.subplot(1, k+1, 1)
+    plt.imshow(query_image.permute(1, 2, 0))
+    plt.title("Query Image")
+    for i, img in enumerate(retrieved_images[:k]):
+        plt.subplot(1, k+1, i+2)
+        plt.imshow(img.permute(1, 2, 0))
+        plt.title(f"Rank {i+1}")
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"query_{query_idx}_top_{k}.png"))
+    plt.close()
+
 def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader, 
                         test_loader, exp_name, device, 
                         dataset_name):
@@ -1020,26 +1169,43 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
         exp_name = exp_name + 'CPCC'
     
     mAPs = []
+    precisions = []
+    recalls = []
+    coarse_targets_map = train_dataset.coarse_map
 
     # load model trained on coarse class
     for seed in range(seeds):
-        model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
-        model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
-        model.eval()
+        if ss_test == 1:
+            model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
+            model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+            model.eval()
+
+        else:
+            model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
+            model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+            model.eval()
     
         aps = []
         prototypes = {i:[] for i in range(len(train_dataset.coarse_names))}
         test_scores = {i:[] for i in range(len(train_dataset.coarse_names))} # cosine scores sorted by id in the dataset
         test_truth = {i:[] for i in range(len(train_dataset.coarse_names))}
+        retrieval_results = []
 
         with torch.no_grad():
             for item in train_loader:
                 data = item[0].to(device)
                 target_coarse = item[-3]
-                feature, _ = model(data)
-                feature = feature.cpu().detach().numpy()
-                for it, t in enumerate(target_coarse):
-                    prototypes[t.item()].append(feature[it])
+                if ss_test:
+                    feature, _ = model(data)
+                    feature = feature.cpu().detach().numpy()
+                    for it, t in enumerate(target_coarse):
+                        prototypes[t.item()].append(feature[it])
+                else:
+                    representation, output_fine = model(data)
+                    prob_fine = F.softmax(output_fine, dim=1)
+                    prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
+                    for it, t in enumerate(target_coarse):
+                        prototypes[t.item()].append(representation[it].cpu().numpy())
             
             # for each coarse class, calculate train representation mean
             for i in range(len(train_dataset.coarse_names)):
@@ -1054,9 +1220,13 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                 test_embs = test_embs.cpu().detach().numpy()
                 for it, t in enumerate(target_coarse):
                     test_emb = test_embs[it]
+                    similarities = []
                     for i in range(len(train_dataset.coarse_names)):
+                        similarity = np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i]))
+                        similarities.append(similarity)
                         test_scores[i].append(np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i])))
                         test_truth[i].append(int(t.item() == i))
+                    retrieval_results.append(np.argmax(similarities))
             
             # for each coarse class, get AP
             for i in range(len(train_dataset.coarse_names)):
@@ -1066,15 +1236,42 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             mAP = np.mean(aps)
             mAPs.append(mAP)
 
+            # Calculate precision and recall
+            precision = precision_score(target_coarse.cpu().numpy(), retrieval_results, average='macro')
+            recall = recall_score(target_coarse.cpu().numpy(), retrieval_results, average='macro')
+            precisions.append(precision)
+            recalls.append(recall)
+
             # TODO: for each coarse class plot top k image, decide k later
-            if seed == 0:
-                pass
+            # if seed == 0:
+            #     k = 10
+            #     for idx, (data, _, target_coarse, _, _) in enumerate(test_loader):
+            #         data = data.to(device)
+            #         target_coarse = target_coarse.cpu().detach().numpy()
+            #         test_embs, _ = model(data)
+            #         test_embs = test_embs.cpu().detach().numpy()
+            #         for it, t in enumerate(target_coarse):
+            #             test_emb = test_embs[it]
+            #             similarities = []
+            #             for i in range(len(train_dataset.coarse_names)):
+            #                 similarity = np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i]))
+            #                 similarities.append(similarity)
+            #             top_k_indices = np.argsort(similarities)[-k:]
+            #             top_k_images = [train_loader.dataset[i][0] for i in top_k_indices]
+            #             plot_top_k_images(data[it].cpu(), top_k_images, idx * len(test_loader) + it, save_dir, k)
+
     
     out = dict()
     out['mAP'] = mAPs
-    out['mean'] = np.average(mAPs)
-    out['std'] = np.std(mAPs)
-    with open(save_dir+f'/{task_name}_mAPs.json', 'w') as fp:
+    out['mean_mAP'] = np.average(mAPs)
+    out['std_mAP'] = np.std(mAPs)
+    out['precisions'] = precisions
+    out['mean_precision'] = np.average(precisions)
+    out['std_precision'] = np.std(precisions)
+    out['recalls'] = recalls
+    out['mean_recall'] = np.average(recalls)
+    out['std_recall'] = np.std(recalls)
+    with open(save_dir+f'/{task_name}_retrieval_evaluation.json', 'w') as fp:
         json.dump(out, fp, indent=4)
     return out
 
@@ -1138,17 +1335,28 @@ def ood_detection(seeds : int, dataset_name : str, exp_name : str):
         Credit: https://github.com/boschresearch/rince/blob/cifar/out_of_dist_detection.py
     '''
     import cifar.data
-    assert dataset_name == 'CIFAR', 'Invalid dataset for OOD detection'
+    import cifar12.data
+    assert dataset_name == 'CIFAR' or dataset_name == 'CIFAR12', 'Invalid dataset for OOD detection'
 
-    in_train_loader, in_test_loader = cifar.data.make_dataloader(num_workers, batch_size, 'full')
-    _, out_test_loader = cifar.data.make_dataloader(num_workers, batch_size, 'outlier')
+    if dataset_name == 'CIFAR12':
+        in_train_loader, in_test_loader = cifar12.data.make_dataloader(num_workers, batch_size, 'sub_split_pretrain', difficulty)
+        _, out_test_loader = cifar12.data.make_dataloader(num_workers, batch_size, 'outlier', difficulty)
+    else:
+        in_train_loader, in_test_loader = cifar.data.make_dataloader(num_workers, batch_size, 'full')
+        _, out_test_loader = cifar.data.make_dataloader(num_workers, batch_size, 'outlier')
     oods = []
     out = {}
     for seed in range(seeds):
         # compute features
-        in_train_features, _, in_train_labels, _ = feature_extractor(in_train_loader, 'full', '', dataset_name, seed)
-        in_test_features, _, _, _ = feature_extractor(in_test_loader, 'full', '', dataset_name, seed)
-        out_test_features, _, _, _ = feature_extractor(out_test_loader, 'full', '', dataset_name, seed)
+        if dataset_name == 'CIFAR12':
+            split = 'split'
+            task = 'sub'
+        else:
+            split = 'full'
+            task = ''
+        in_train_features, _, in_train_labels, _ = feature_extractor(in_train_loader, split, task, dataset_name, seed)
+        in_test_features, _, _, _ = feature_extractor(in_test_loader, split, task, dataset_name, seed)
+        out_test_features, _, _, _ = feature_extractor(out_test_loader, split, task, dataset_name, seed)
         print("Features successfully loaded.")
 
         features_outlier = np.concatenate([out_test_features, in_test_features], axis=0)
@@ -1470,15 +1678,19 @@ def main():
             epochs = hyper['epochs']
             
             if task == 'sub':
-                train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting)
+                train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
             elif task == 'in':
-                train_loader, test_loader = make_dataloader(num_workers, batch_size, 'in_split_pretrain', dataset_name, case, breeds_setting)
+                train_loader, test_loader = make_dataloader(num_workers, batch_size, 'in_split_pretrain', dataset_name, case, breeds_setting, difficulty)
             pretrain_objective(train_loader, test_loader, device, save_dir, seed, split, cpcc, exp_name, epochs, task, dataset_name, breeds_setting, hyper)
             
             if ss_test:
                 continue
             # down
-            for level in ['mid','fine']: 
+            if dataset_name == 'CIFAR12':
+                levels = ['fine']
+            else:
+                levels = ['mid', 'fine']
+            for level in levels: 
                 hyper = load_params(dataset_name, 'down', level, breeds_setting)
                 epochs = hyper['epochs']
                 downstream_transfer(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting, hyper, epochs)
@@ -1486,47 +1698,56 @@ def main():
         elif split == 'full': 
             hyper = load_params(dataset_name, 'pre', breeds_setting=breeds_setting)
             epochs = hyper['epochs']
-            train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting) # full
+            train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting, difficulty) # full
             pretrain_objective(train_loader, test_loader, device, save_dir, seed, split, cpcc, exp_name, epochs, task, dataset_name, breeds_setting, hyper)
 
     if ss_test:
-        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting)
+        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
         levels = ['coarse'] # Let' simplify all exps for now
         downstream_zeroshot(seeds, save_dir, split, task, 'sub_split_pretrain', train_loader, test_loader, levels, exp_name, device, dataset_name)
         retrieve_final_metrics(test_loader, dataset_name, 'sub_split_pretrain')
         retrieval_similarity(seeds, save_dir, split, task, 'sub_split_pretrain', train_loader, test_loader, exp_name, device, dataset_name)
 
         # st downstream zero shot
-        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_zero_shot', dataset_name, case, breeds_setting)
+        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
         downstream_zeroshot(seeds, save_dir, split, task, 'sub_split_zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
         retrieval_similarity(seeds, save_dir, split, task, 'sub_split_zero_shot', train_loader, test_loader, exp_name, device, dataset_name)
 
         return 
+
+    if dataset_name == 'CIFAR12':
+        # train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
+        # retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
+        retrieve_downstream_metrics(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
     
     # Eval: zero-shot/ood
 
-    if task == 'sub':
-        if dataset_name == 'MNIST':
-            levels = ['coarse']
-        else:
-            levels = ['coarsest','coarse'] 
-        train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting)
-    elif task == '': # full
-        if dataset_name == 'MNIST':
-            if train_on_mid:
-                levels = ['coarse','mid'] 
-            else:
-                levels = ['coarse','mid','fine'] 
-        else:
-            if train_on_mid:
-                levels = ['coarsest','coarse','mid']
-            else:
-                levels = ['coarsest','coarse','mid','fine']
-        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting)
+    # if task == 'sub':
+    #     if dataset_name == 'MNIST' or dataset_name == 'CIFAR12':
+    #         levels = ['coarse']
+    #     else:
+    #         levels = ['coarsest','coarse'] 
+    #     train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
+    #     if dataset_name == 'CIFAR12':
+    #         retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
+    # elif task == '': # full
+    #     if dataset_name == 'MNIST':
+    #         if train_on_mid:
+    #             levels = ['coarse','mid'] 
+    #         else:
+    #             levels = ['coarse','mid','fine'] 
+    #     else:
+    #         if train_on_mid:
+    #             levels = ['coarsest','coarse','mid']
+    #         else:
+    #             levels = ['coarsest','coarse','mid','fine']
+    #     train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting, difficulty)
     
-    downstream_zeroshot(seeds, save_dir, split, task, 'zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
-    retrieve_final_metrics(test_loader, dataset_name, 'zero_shot')
+    # downstream_zeroshot(seeds, save_dir, split, task, 'zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
+    # retrieve_final_metrics(test_loader, dataset_name, 'zero_shot')
+
     # if (dataset_name == 'CIFAR') and (split == 'full'):
+    # if dataset_name == 'CIFAR12':
     #     ood_detection(seeds, dataset_name, exp_name)
     
     return
@@ -1537,7 +1758,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default="/data/common/cindy2000_sh", type=str, help='directory that you want to save your experiment results')
     parser.add_argument("--timestamp", required=True, help=r'your unique experiment id, hint: datetime.now().strftime("%m%d%Y%H%M%S")') 
-    parser.add_argument("--dataset", required=True, help='MNIST/CIFAR/BREEDS')
+    parser.add_argument("--dataset", required=True, help='MNIST/CIFAR/CIFAR12/BREEDS')
     parser.add_argument("--exp_name", required=True, help='ERM/MTL/Curriculum/sumloss/HXE/soft/quad')
     parser.add_argument("--split", required=True, help='split/full')
     parser.add_argument("--task", default='', help='in/sub')
@@ -1546,6 +1767,7 @@ if __name__ == '__main__':
     parser.add_argument("--cpcc_list", nargs='+', default=['coarse'], help='ex: --cpcc-list mid coarse, for 3 layer cpcc')
     parser.add_argument("--group", default=0, type=int, help='0/1, grouplasso')
     parser.add_argument("--case", default=0, type=int, help='Type of MNIST, 0/1')
+    parser.add_argument("--difficulty", default="medium", type=str, help='Difficulty of CIFAR12, easy/medium/hard')
 
     parser.add_argument("--train_on_mid", default=0, type=int, help='Train on fine or mid layer, 0/1')
     parser.add_argument("--ss_test", default=0, type=int, help='Only Source train & Source test, 0/1')
@@ -1578,6 +1800,7 @@ if __name__ == '__main__':
     coarse_ce = args.coarse_ce
     reg = args.reg
     numItermax = args.numItermax
+    difficulty = args.difficulty
 
     num_workers = args.num_workers
     batch_size = args.batch_size
