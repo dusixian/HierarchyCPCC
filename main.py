@@ -11,10 +11,12 @@ import pandas as pd
 import re
 import ot
 from itertools import combinations
+from tqdm import tqdm
 
 
 from sklearn.metrics import roc_auc_score, silhouette_score, average_precision_score
-from sklearn.metrics import precision_score, recall_score
+from sklearn.metrics import precision_score, recall_score, label_ranking_average_precision_score
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.mixture import GaussianMixture
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import pdist
@@ -1157,7 +1159,7 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
     
     if cpcc:
         exp_name = exp_name + 'CPCC'
-    
+
     mAPs = []
     precisions = []
     recalls = []
@@ -1181,7 +1183,7 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
         test_truth = {i:[] for i in range(len(train_dataset.coarse_names))}
         retrieval_results = []
         all_target_coarse = []
-
+        
         with torch.no_grad():
             for item in train_loader:
                 data = item[0].to(device)
@@ -1266,6 +1268,156 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
     with open(save_dir+f'/{task_name}_retrieval_evaluation.json', 'w') as fp:
         json.dump(out, fp, indent=4)
     return out
+
+# def retrieval_similarity2(seeds, save_dir, split, task, task_name, train_loader, 
+#                         test_loader, exp_name, device, 
+#                         dataset_name):
+#     def grad_cos(model, criterion, x1, y1, x2, y2):
+    #     model.zero_grad()
+    #     representation1, output_one1 = model(x1)
+    #     loss1 = criterion(output_one1, y1)
+    #     loss1.backward(retain_graph=True)
+    #     # print('loss1=', loss1.item())
+    #     # for p in model.parameters():
+    #     #     print(p.grad)
+    #     grad1 = torch.cat([p.grad.view(-1) if p.grad is not None else torch.zeros_like(p).view(-1) for p in model.parameters()])
+
+    #     model.zero_grad()
+    #     representation2, output_one2 = model(x2)
+    #     loss2 = criterion(output_one2, y2)
+    #     loss2.backward()
+    #     grad2 = torch.cat([p.grad.view(-1) if p.grad is not None else torch.zeros_like(p).view(-1) for p in model.parameters()])
+
+    #     return cosine_similarity(grad1, grad2)
+    # train_dataset = train_loader.dataset 
+
+    # if cpcc:
+    #     exp_name = exp_name + 'CPCC'
+
+    # results = {
+    #     # 'mean_sim': {
+    #     #     'mAPs': [],
+    #     #     'precisions': [],
+    #     #     'recalls': []
+    #     # },
+    #     'cos_sim': {
+    #         'mAPs': [],
+    #         'precisions': [],
+    #         'recalls': [],
+    #         # 'label_ranking_average_precision': []
+    #     },
+    #     # 'grad_cos': {
+    #     #     'mAPs': [],
+    #     #     'precisions': [],
+    #     #     'recalls': [],
+    #     #     'label_ranking_average_precision': []
+    #     # }
+    # }
+
+    # coarse_targets_map = train_dataset.coarse_map
+    # criterion = torch.nn.CrossEntropyLoss()
+
+    # for seed in range(seeds):
+    #     # Load model and initialize variables as before
+    #     model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
+    #     model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+    #     model.eval()
+
+    #     all_retrieved_indices = []
+    #     all_scores = []
+    #     all_target_coarse = []
+    #     for item in tqdm(test_loader):
+    #         data = item[0].to(device)
+    #         target_coarse = item[-3]
+    #         all_target_coarse.extend(target_coarse.cpu().numpy())
+    #         test_embs, _ = model(data)
+    #         test_embs = test_embs.cpu().detach().numpy()
+            
+    #         max_similarities = []
+    #         retrieved_indices = []
+    #         scores = []
+    #         for it, t in enumerate(target_coarse):
+    #             test_emb = test_embs[it]
+    #             similarities = []
+    #             for train_item in train_loader:
+    #                 train_data = train_item[0].to(device)
+    #                 train_embs, _ = model(train_data)
+    #                 train_embs = train_embs.cpu().detach().numpy()
+    #                 for train_emb in train_embs:
+    #                     similarity = np.dot(test_emb, train_emb) / (np.linalg.norm(test_emb) * np.linalg.norm(train_emb))
+    #                     similarities.append(similarity)
+    #             top_5_indices = np.argsort(similarities)[-5:]
+    #             scores.append([similarities[i] for i in top_5_indices])
+    #             retrieved_indices.append(top_5_indices[0])
+    #             max_similarities.append(np.max(similarities))
+    #         all_retrieved_indices.extend(retrieved_indices)
+    #         all_scores.extend(scores)
+
+    #     # Compute metrics for cosine similarity method
+    #     precision = precision_score(all_target_coarse, all_retrieved_indices, average='macro')
+    #     recall = recall_score(all_target_coarse, all_retrieved_indices, average='macro')
+    #     mAP = np.mean(max_similarities)
+    #     # lraps = label_ranking_average_precision_score(np.array(all_target_coarse)[:, np.newaxis], np.array(all_scores))
+
+    #     results['cos_sim']['mAPs'].append(mAP)
+    #     results['cos_sim']['precisions'].append(precision)
+    #     results['cos_sim']['recalls'].append(recall)
+        # results['cos_sim']['label_ranking_average_precision'].append(lraps)
+
+
+        # Gradient cosine similarity method
+        # all_retrieved_indices = []
+        # all_scores = []
+        # all_target_coarse = []
+        # for item in test_loader:
+        #     data = item[0].to(device)
+        #     target_coarse = item[-3]
+        #     all_target_coarse.extend(target_coarse.cpu().numpy())
+        #     test_embs, _ = model(data)
+            
+        #     max_similarities = []
+        #     retrieved_indices = []
+        #     scores = []
+
+        #     similarities_matrix = []
+
+        #     for train_item in train_loader:
+        #         train_data = train_item[0].to(device)
+        #         train_target = train_item[-3]
+        #         similarity = grad_cos(model, nn.CrossEntropyLoss().to(device), data, target_coarse.to(device), train_data, train_target.to(device))
+        #         similarities_matrix.append(similarity)
+
+        #     similarities_matrix = torch.stack(similarities_matrix, dim=1)
+
+        #     for i in range(similarities_matrix.size(0)):
+        #         similarities = similarities_matrix[i]
+        #         top_5_indices = torch.argsort(similarities, descending=True)[:5]
+        #         scores.append(similarities[top_5_indices].cpu().numpy())
+        #         retrieved_indices.append(top_5_indices[0].item())
+        #         max_similarities.append(torch.max(similarities).item())
+
+        #     all_retrieved_indices.extend(retrieved_indices)
+        #     all_scores.extend(scores)
+
+        # # Compute metrics for gradient cosine similarity method
+        # precision = precision_score(all_target_coarse, all_retrieved_indices, average='macro')
+        # recall = recall_score(all_target_coarse, all_retrieved_indices, average='macro')
+        # mAP = np.mean(max_similarities)
+        # lraps = label_ranking_average_precision_score(np.array(all_target_coarse)[:, np.newaxis], np.array(all_scores))
+
+        # results['grad_cos']['mAPs'].append(mAP)
+        # results['grad_cos']['precisions'].append(precision)
+        # results['grad_cos']['recalls'].append(recall)
+        # results['grad_cos']['label_ranking_average_precision'].append(lraps)
+
+        # ... [Compute metrics for mean similarity and cosine similarity methods as before] ...
+
+    # Save results to file
+    # with open(save_dir + f'/{task_name}_retrieval_evaluation2.json', 'w') as fp:
+    #     json.dump(results, fp, indent=4)
+
+    # return results
+
 
 def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_name : str, seed : int):
     dataset = dataloader.dataset
