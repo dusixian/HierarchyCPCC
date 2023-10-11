@@ -1163,10 +1163,13 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
     mAPs = []
     precisions = []
     recalls = []
+    lca_corrects = []
+    lca_mistakes = []
     coarse_targets_map = train_dataset.coarse_map
 
     # load model trained on coarse class
     for seed in range(seeds):
+
         if ss_test == 1:
             model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
             model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
@@ -1185,16 +1188,23 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
         all_target_coarse = []
         
         with torch.no_grad():
+            tr_rep = []
+            tr_fine = []
+            te_rep = []
+            te_fine = []
             for item in train_loader:
                 data = item[0].to(device)
                 target_coarse = item[-3]
+                tr_fine.append(item[-1].detach().cpu().numpy())
                 if ss_test:
                     feature, _ = model(data)
                     feature = feature.cpu().detach().numpy()
+                    tr_rep.append(feature)
                     for it, t in enumerate(target_coarse):
                         prototypes[t.item()].append(feature[it])
                 else:
                     representation, output_fine = model(data)
+                    tr_rep.append(representation.detach().cpu().numpy())
                     prob_fine = F.softmax(output_fine, dim=1)
                     prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
                     for it, t in enumerate(target_coarse):
@@ -1212,6 +1222,8 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                 all_target_coarse.extend(target_coarse.cpu().numpy())
                 test_embs,_ = model(data)
                 test_embs = test_embs.cpu().detach().numpy()
+                te_rep.append(test_embs)
+                te_fine.append(item[-1].cpu().numpy())
                 for it, t in enumerate(target_coarse):
                     test_emb = test_embs[it]
                     similarities = []
@@ -1226,6 +1238,37 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             for i in range(len(train_dataset.coarse_names)):
                 aps.append(average_precision_score(test_truth[i], test_scores[i]))
 
+            tr_rep = np.concatenate(tr_rep)
+            tr_fine = np.concatenate(tr_fine)
+            te_rep = np.concatenate(te_rep)
+            te_fine = np.concatenate(te_fine)
+            coarse_map = test_loader.dataset.coarse_map
+
+            lca_total = 0
+            len_mistakes = 0
+            for i in tqdm(range(len(te_fine))):
+                # for each test point find the closest l2 train data check if it is the same fine label
+                # if it is the same coarse label by checking lca the smaller the better
+                query = te_rep[i]
+                truth_fine = te_fine[i]
+                truth_coarse = coarse_map[truth_fine]
+                dist = np.linalg.norm(tr_rep - query, axis=1)
+                closest_fine = tr_fine[np.argmin(dist)]
+                closest_coarse = coarse_map[closest_fine]
+                if truth_fine == closest_fine:
+                    pass
+                elif truth_fine != closest_fine:
+                    if truth_coarse == closest_coarse:
+                        len_mistakes += 1
+                        lca_total += 1
+                    else:
+                        len_mistakes += 1
+                        lca_total += 2
+            
+            # include correct
+            lca_correct = lca_total/len(test_loader.dataset)
+            lca_mistake = lca_total/len_mistakes
+
             # average to get mAP
             mAP = np.mean(aps)
             mAPs.append(mAP)
@@ -1235,6 +1278,8 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             recall = recall_score(all_target_coarse, retrieval_results, average='macro')
             precisions.append(precision)
             recalls.append(recall)
+            lca_corrects.append(lca_correct)
+            lca_mistakes.append(lca_mistake)
 
             # TODO: for each coarse class plot top k image, decide k later
             # if seed == 0:
@@ -1265,6 +1310,12 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
     out['recalls'] = recalls
     out['mean_recall'] = np.average(recalls)
     out['std_recall'] = np.std(recalls)
+    out['lca_mistake'] = lca_mistakes
+    out['mean_lca_mistake'] = np.average(lca_mistakes)
+    out['std_lca_mistake'] = np.std(lca_mistakes)
+    out['lca_correct'] = lca_corrects
+    out['mean_lca_correct'] = np.average(lca_corrects)
+    out['std_lca_correct'] = np.std(lca_corrects)
     with open(save_dir+f'/{task_name}_retrieval_evaluation.json', 'w') as fp:
         json.dump(out, fp, indent=4)
     return out
@@ -1417,7 +1468,6 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
     #     json.dump(results, fp, indent=4)
 
     # return results
-
 
 def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_name : str, seed : int):
     dataset = dataloader.dataset

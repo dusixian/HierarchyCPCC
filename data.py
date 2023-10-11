@@ -7,7 +7,7 @@ import cifar.data as cifar
 import cifar12.data as cifar12
 import mnist.data as mnist
 import breeds.data as breeds
-import inaturalist.data as inat
+# import inaturalist.data as inat
 
 
 def make_kshot_loader(num_workers : int, batch_size : int, k : int, layer : str, 
