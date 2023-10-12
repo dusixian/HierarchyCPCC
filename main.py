@@ -923,13 +923,13 @@ def downstream_transfer(save_dir : str, seed : int, device : torch.device,
     
     return model
 
-def retrieve_downstream_metrics(save_dir : str, seed : int, device : torch.device, 
+def retrieve_downstream_metrics(save_dir : str, seeds : int, device : torch.device, 
                                 batch_size : int, level : str, CPCC : bool,
                                 exp_name : str, num_workers : int, task : str, 
                                 dataset_name : str, case : int, breeds_setting : str):
 
     train_loader, test_loader = make_kshot_loader(num_workers, batch_size, 1, level, 
-                                                task, seed, dataset_name, case, breeds_setting, difficulty)
+                                                task, seeds, dataset_name, case, breeds_setting, difficulty)
     dataset = train_loader.dataset.dataset
 
     metrics = {
@@ -943,6 +943,7 @@ def retrieve_downstream_metrics(save_dir : str, seed : int, device : torch.devic
 
     criterion = torch.nn.CrossEntropyLoss().to(device)
 
+    # print('seeds: ', seeds)
     for seed in range(seeds):
         model_path = save_dir + f"/down{task}_{level}_seed{seed}.pth"
         if level == 'fine':
@@ -1860,6 +1861,52 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
     print(out_cpcc, out_silhouette)
     return out_cpcc, out_silhouette
 
+def better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader):
+    lca_corrects = []
+    lca_mistakes = []
+
+    train_dataset = train_loader.dataset
+    for seed in range(seeds):
+        model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
+        model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+        model.eval()
+
+        with torch.no_grad():
+            lca_total = 0
+            len_mistakes = 0
+            for idx, (data, target_coarser, target_coarse, target_mid, target_fine) in enumerate(test_loader):
+                data = data.to(device)
+                target_coarse = target_coarse.to(device)
+                target_fine = target_fine.to(device)
+                test_representation, output = model(data)
+                
+
+                pred1 = output.argmax(dim=1, keepdim=False) 
+                mistakes_target = target_fine[pred1 != target_fine]
+                mistakes_pred = pred1[pred1 != target_fine]
+                mistakes_coarse_target = torch.as_tensor([test_loader.dataset.coarse_map[t] for t in mistakes_target])
+                mistakes_coarse_pred = torch.as_tensor([test_loader.dataset.coarse_map[t] for t in mistakes_pred])
+                lca = mistakes_coarse_target.eq(mistakes_coarse_pred).sum()+(len(mistakes_target) - mistakes_coarse_target.eq(mistakes_coarse_pred).sum())*2
+                lca_total += lca
+                len_mistakes += len(mistakes_target)
+
+            # include correct
+            lca_correct = lca_total/len(test_loader.dataset)
+            lca_mistake = lca_total/len_mistakes
+            lca_corrects.append(lca_correct.item())
+            lca_mistakes.append(lca_mistake.item())
+        
+    out = dict()
+    out['lca_mistake'] = lca_mistakes
+    out['mean_lca_mistake'] = np.average(lca_mistakes)
+    out['std_lca_mistake'] = np.std(lca_mistakes)
+    out['lca_correct'] = lca_corrects
+    out['mean_lca_correct'] = np.average(lca_corrects)
+    out['std_lca_correct'] = np.std(lca_corrects)
+
+    with open(save_dir+f'/lca_classification.json', 'w') as fp:
+        json.dump(out, fp, sort_keys=True, indent=4)
+
 def main():
     
     # Train
@@ -1912,7 +1959,8 @@ def main():
     if dataset_name == 'CIFAR12':
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
         retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
-        retrieve_downstream_metrics(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
+        retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
+        better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader)
     
     # Eval: zero-shot/ood
 
