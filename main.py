@@ -1243,7 +1243,10 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             tr_fine = np.concatenate(tr_fine)
             te_rep = np.concatenate(te_rep)
             te_fine = np.concatenate(te_fine)
-            coarse_map = test_loader.dataset.coarse_map
+            coarse_map_test = test_loader.dataset.coarse_map
+            coarse_map_train = train_loader.dataset.coarse_map
+            # print('coarse_map: ', len(coarse_map))
+            # print('test_loader.dataset.dataset.coarse_map: ', len(test_loader.dataset.dataset.coarse_map))
 
             lca_total = 0
             len_mistakes = 0
@@ -1252,10 +1255,10 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                 # if it is the same coarse label by checking lca the smaller the better
                 query = te_rep[i]
                 truth_fine = te_fine[i]
-                truth_coarse = coarse_map[truth_fine]
+                truth_coarse = coarse_map_test[truth_fine]
                 dist = np.linalg.norm(tr_rep - query, axis=1)
                 closest_fine = tr_fine[np.argmin(dist)]
-                closest_coarse = coarse_map[closest_fine]
+                closest_coarse = coarse_map_train[closest_fine]
                 if truth_fine == closest_fine:
                     pass
                 elif truth_fine != closest_fine:
@@ -1524,7 +1527,7 @@ def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_
         targets_coarse = np.concatenate(targets_coarse,axis=0)  
     return (features, probs, targets_one, targets_coarse)
 
-def ood_detection(seeds : int, dataset_name : str, exp_name : str):
+def ood_detection(seeds : int, dataset_name : str, exp_name : str, task : str, split : str):
     '''
         Set CIFAR10 as the outlier of CIFAR100.
         Credit: https://github.com/boschresearch/rince/blob/cifar/out_of_dist_detection.py
@@ -1533,7 +1536,7 @@ def ood_detection(seeds : int, dataset_name : str, exp_name : str):
     import cifar12.data
     assert dataset_name == 'CIFAR' or dataset_name == 'CIFAR12', 'Invalid dataset for OOD detection'
 
-    if dataset_name == 'CIFAR12':
+    if task == "sub":
         in_train_loader, in_test_loader = cifar12.data.make_dataloader(num_workers, batch_size, 'sub_split_pretrain', difficulty)
         _, out_test_loader = cifar12.data.make_dataloader(num_workers, batch_size, 'outlier', difficulty)
     else:
@@ -1546,9 +1549,7 @@ def ood_detection(seeds : int, dataset_name : str, exp_name : str):
         if dataset_name == 'CIFAR12':
             split = 'split'
             task = 'sub'
-        else:
-            split = 'full'
-            task = ''
+
         in_train_features, _, in_train_labels, _ = feature_extractor(in_train_loader, split, task, dataset_name, seed)
         in_test_features, _, _, _ = feature_extractor(in_test_loader, split, task, dataset_name, seed)
         out_test_features, _, _, _ = feature_extractor(out_test_loader, split, task, dataset_name, seed)
@@ -1956,7 +1957,7 @@ def main():
 
         return 
 
-    if dataset_name == 'CIFAR12':
+    elif task == 'sub':
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
         retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
         retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
@@ -1970,8 +1971,7 @@ def main():
         else:
             levels = ['coarsest','coarse'] 
         train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
-        if dataset_name == 'CIFAR12':
-            retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
+        retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
     elif task == '': # full
         if dataset_name == 'MNIST':
             if train_on_mid:
@@ -1989,8 +1989,8 @@ def main():
     retrieve_final_metrics(test_loader, dataset_name, 'zero_shot')
 
     # if (dataset_name == 'CIFAR') and (split == 'full'):
-    if dataset_name == 'CIFAR12':
-        ood_detection(seeds, dataset_name, exp_name)
+    if dataset_name == 'CIFAR12' or dataset_name == 'CIFAR':
+        ood_detection(seeds, dataset_name, exp_name, task, split)
     
     return
 

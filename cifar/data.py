@@ -323,7 +323,7 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
         Augmentation the same as CIFAR100.
         Return a tuple of train, test dataset.
         '''
-        train_dataset = CIFAR10(root = './data',
+        train_dataset = CIFAR10(root = './data', download = True,
                                     train = True,                         
                                     transform = transforms.Compose(
                                                     [transforms.RandomCrop(32, padding=4),
