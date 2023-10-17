@@ -1849,10 +1849,13 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
         targets_oneL.append(targets_one)
         targets_coarseL.append(targets_coarse)
     dataset = test_loader.dataset 
-    if train_on_mid:
-        out_cpcc = fullCPCC(dataL, targets_oneL, dataset.mid2coarse)
+    if split == 'full' or task_name == 'pretrain':
+        if train_on_mid:
+            out_cpcc = fullCPCC(dataL, targets_oneL, dataset.mid2coarse)
+        else:
+            out_cpcc = fullCPCC(dataL, targets_oneL, dataset.coarse_map)
     else:
-        out_cpcc = fullCPCC(dataL, targets_oneL, dataset.coarse_map)
+        out_cpcc = ''
     out_silhouette = silhouette(dataL, targets_coarseL)
     
     # if (split == 'full') and (dataset_name == 'CIFAR'):
@@ -1865,6 +1868,8 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
 def better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader):
     lca_corrects = []
     lca_mistakes = []
+    fine_res = []
+    coarse_res = []
 
     train_dataset = train_loader.dataset
     for seed in range(seeds):
@@ -1872,6 +1877,8 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
         model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
         model.eval()
 
+        fine_accs = []
+        coarse_accs = []
         with torch.no_grad():
             lca_total = 0
             len_mistakes = 0
@@ -1880,8 +1887,16 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
                 target_coarse = target_coarse.to(device)
                 target_fine = target_fine.to(device)
                 test_representation, output = model(data)
-                
-
+                # simple classify
+                prob_fine = F.softmax(output,dim=1)
+                pred_fine = prob_fine.argmax(dim=1, keepdim=False)
+                prob_coarse = get_layer_prob_from_fine(prob_fine, train_dataset.coarse_map)
+                pred_coarse = prob_coarse.argmax(dim=1, keepdim=False)
+                acc_fine = list(pred_fine.eq(target_fine).flatten().cpu().numpy())
+                acc_coarse = list(pred_coarse.eq(target_coarse).flatten().cpu().numpy())
+                fine_accs.extend(acc_fine)
+                coarse_accs.extend(acc_coarse )
+                # lca
                 pred1 = output.argmax(dim=1, keepdim=False) 
                 mistakes_target = target_fine[pred1 != target_fine]
                 mistakes_pred = pred1[pred1 != target_fine]
@@ -1896,6 +1911,8 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
             lca_mistake = lca_total/len_mistakes
             lca_corrects.append(lca_correct.item())
             lca_mistakes.append(lca_mistake.item())
+        fine_res.append(sum(fine_accs)/len(fine_accs))
+        coarse_res.append(sum(coarse_accs)/len(coarse_accs))
         
     out = dict()
     out['lca_mistake'] = lca_mistakes
@@ -1904,6 +1921,8 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
     out['lca_correct'] = lca_corrects
     out['mean_lca_correct'] = np.average(lca_corrects)
     out['std_lca_correct'] = np.std(lca_corrects)
+    out['fine_acc'] = {'value' : fine_res, 'mean' : np.average(fine_res), 'std' : np.std(fine_res)}
+    out['coarse_acc'] = {'value' : coarse_res, 'mean' : np.average(coarse_res), 'std' : np.std(coarse_res)}
 
     with open(save_dir+f'/lca_classification.json', 'w') as fp:
         json.dump(out, fp, sort_keys=True, indent=4)
@@ -1962,6 +1981,7 @@ def main():
         retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
         retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
         better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader)
+        retrieve_final_metrics(test_loader, dataset_name, 'pretrain')
     
     # Eval: zero-shot/ood
 
