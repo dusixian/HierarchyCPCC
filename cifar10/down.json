@@ -1,0 +1,12 @@
+{   
+    "fine":{
+        "epochs": 100,
+        "optimizer": {
+            "lr": 0.01
+        },
+        "scheduler": {
+            "step_size": 60
+        }
+    }
+    
+}

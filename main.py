@@ -1088,7 +1088,8 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_t
                     model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
                 else:
                     model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
-            model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+            # model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+            model.load_state_dict(torch.load('/home/sixian/full_seed0.pth'))
             model.eval()
             
             layer_accs = []
@@ -1321,6 +1322,79 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
     out['mean_lca_correct'] = np.average(lca_corrects)
     out['std_lca_correct'] = np.std(lca_corrects)
     with open(save_dir+f'/{task_name}_retrieval_evaluation.json', 'w') as fp:
+        json.dump(out, fp, indent=4)
+    return out
+
+def retrieval_similarity_fine(seeds, save_dir, split, task, task_name, train_loader, 
+                        test_loader, exp_name, device, 
+                        dataset_name):
+    # check precision/recall
+    # plot knn top 10 images, save top 10 id
+    train_dataset = train_loader.dataset 
+    
+    if cpcc:
+        exp_name = exp_name + 'CPCC'
+
+    mAPs = []
+    precisions = []
+    recalls = []
+    lca_corrects = []
+    lca_mistakes = []
+
+    # load model trained on fine class
+    for seed in range(seeds):
+
+        model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
+        model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+        model.eval()
+    
+        aps = []
+        prototypes = {i:[] for i in range(len(train_dataset.fine_names))}
+        test_scores = {i:[] for i in range(len(train_dataset.fine_names))} # cosine scores sorted by id in the dataset
+        test_truth = {i:[] for i in range(len(train_dataset.fine_names))}
+        all_target_fine = []
+        
+        with torch.no_grad():
+            for item in train_loader:
+                data = item[0].to(device)
+                target_fine = item[-1]
+                representation, output_fine = model(data)
+                for it, t in enumerate(target_fine):
+                    prototypes[t.item()].append(representation[it].cpu().numpy())
+            
+            # for each fine class, calculate train representation mean
+            for i in range(len(train_dataset.fine_names)):
+                prototypes[i] = np.mean(np.stack(prototypes[i],axis=0),axis=0)
+
+            # calculate cosine similarity of the train representation mean and test images embedding
+            # and generate ground truth
+            for item in test_loader:
+                data = item[0].to(device)
+                target_fine = item[-1]
+                all_target_fine.extend(target_fine.cpu().numpy())
+                test_embs,_ = model(data)
+                test_embs = test_embs.cpu().detach().numpy()
+                for it, t in enumerate(target_fine):
+                    test_emb = test_embs[it]
+                    similarities = []
+                    for i in range(len(train_dataset.fine_names)):
+                        test_scores[i].append(np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i])))
+                        test_truth[i].append(int(t.item() == i))
+            
+            # for each fine class, get AP
+            for i in range(len(train_dataset.fine_names)):
+                aps.append(average_precision_score(test_truth[i], test_scores[i]))
+
+
+            # average to get mAP
+            mAP = np.mean(aps)
+            mAPs.append(mAP)
+    
+    out = dict()
+    out['mAP'] = mAPs
+    out['mean_mAP'] = np.average(mAPs)
+    out['std_mAP'] = np.std(mAPs)
+    with open(save_dir+f'/{task_name}_retrieval_evaluation_fine.json', 'w') as fp:
         json.dump(out, fp, indent=4)
     return out
 
@@ -1874,7 +1948,8 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
     train_dataset = train_loader.dataset
     for seed in range(seeds):
         model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
-        model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+        # model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
+        model.load_state_dict(torch.load('/home/sixian/full_seed0.pth'))
         model.eval()
 
         fine_accs = []
@@ -1930,7 +2005,6 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
 def main():
     
     # Train
-    
     for seed in range(seeds):
         seed_everything(seed)
         if split == 'split':
@@ -1947,14 +2021,16 @@ def main():
             if ss_test:
                 continue
             # down
-            if dataset_name == 'CIFAR12':
+            if dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
                 levels = ['fine']
             else:
                 levels = ['mid', 'fine']
-            for level in levels: 
-                hyper = load_params(dataset_name, 'down', level, breeds_setting)
-                epochs = hyper['epochs']
-                downstream_transfer(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting, hyper, epochs)
+            # for breeds2, we don't do fine-tune
+            if dataset_name != 'BREEDS2':
+                for level in levels: 
+                    hyper = load_params(dataset_name, 'down', level, breeds_setting)
+                    epochs = hyper['epochs']
+                    downstream_transfer(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting, hyper, epochs)
         
         elif split == 'full': 
             hyper = load_params(dataset_name, 'pre', breeds_setting=breeds_setting)
@@ -1978,20 +2054,27 @@ def main():
 
     elif task == 'sub':
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
-        retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
-        retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
+        if dataset_name != 'BREEDS2':
+            retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
+            retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
+        retrieval_similarity_fine(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
         better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader)
         retrieve_final_metrics(test_loader, dataset_name, 'pretrain')
     
     # Eval: zero-shot/ood
 
     if task == 'sub':
-        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12':
+        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
             levels = ['coarse']
+        elif dataset_name == 'BREEDS2':
+            levels = ['coarse', 'mid', 'fine']
         else:
             levels = ['coarsest','coarse'] 
         train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
-        retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
+        if dataset_name == 'BREEDS2':
+            retrieval_similarity_fine(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
+        else:
+            retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
     elif task == '': # full
         if dataset_name == 'MNIST':
             if train_on_mid:
@@ -2020,7 +2103,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default="/data/common/cindy2000_sh", type=str, help='directory that you want to save your experiment results')
     parser.add_argument("--timestamp", required=True, help=r'your unique experiment id, hint: datetime.now().strftime("%m%d%Y%H%M%S")') 
-    parser.add_argument("--dataset", required=True, help='MNIST/CIFAR/CIFAR12/BREEDS')
+    parser.add_argument("--dataset", required=True, help='MNIST/CIFAR/CIFAR12/BREEDS/BREEDS2')
     parser.add_argument("--exp_name", required=True, help='ERM/MTL/Curriculum/sumloss/HXE/soft/quad')
     parser.add_argument("--split", required=True, help='split/full')
     parser.add_argument("--task", default='', help='in/sub')
@@ -2030,6 +2113,7 @@ if __name__ == '__main__':
     parser.add_argument("--group", default=0, type=int, help='0/1, grouplasso')
     parser.add_argument("--case", default=0, type=int, help='Type of MNIST, 0/1')
     parser.add_argument("--difficulty", default="medium", type=str, help='Difficulty of CIFAR12, easy/medium/hard')
+    parser.add_argument("--breeds_setting", default="", type=str, help='living17, nonliving26, entity13, entity30')
 
     parser.add_argument("--train_on_mid", default=0, type=int, help='Train on fine or mid layer, 0/1')
     parser.add_argument("--ss_test", default=0, type=int, help='Only Source train & Source test, 0/1')
@@ -2076,22 +2160,36 @@ if __name__ == '__main__':
     save_dir = root + '/' + timestamp 
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    checkpoint_dir = save_dir + '/checkpoint'
-    if not os.path.exists(checkpoint_dir):
-        os.makedirs(checkpoint_dir)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("device: ", device)
 
-    if dataset_name == 'BREEDS':
-        # for breeds_setting in ['living17','entity13','entity30','nonliving26']:
-        for breeds_setting in ['living17']:
-            save_dir = root + '/' + timestamp + '/' + breeds_setting
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir)
-            main()
+    # if dataset_name == 'BREEDS':
+    #     # for breeds_setting in ['living17','nonliving26','entity13','entity30']:
+    #     for breeds_setting in ['living17']:
+    #         save_dir = root + '/' + timestamp + '/' + breeds_setting
+    #         if not os.path.exists(save_dir):
+    #             os.makedirs(save_dir)
+    #         checkpoint_dir = save_dir + '/checkpoint'
+    #         if not os.path.exists(checkpoint_dir):
+    #             os.makedirs(checkpoint_dir)
+    #         main()
+    if dataset_name == 'BREEDS' or dataset_name == 'BREEDS2':
+        breeds_setting = args.breeds_setting
+        assert breeds_setting in ['living17','nonliving26','entity13','entity30']
+        save_dir = root + '/' + timestamp + '/' + breeds_setting
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        checkpoint_dir = save_dir + '/checkpoint'
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir)
+        main()
     
     else:
         breeds_setting = None
+        checkpoint_dir = save_dir + '/checkpoint'
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir)
         main()
+
     

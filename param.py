@@ -17,7 +17,7 @@ def load_params(dataset_name : str, task : str, layer : str = None,
         breeds_setting : living17/nonliving26/entity13/entity30
     '''
     reset = {}
-    if dataset_name == 'BREEDS':
+    if dataset_name == 'BREEDS' or dataset_name == 'BREEDS2':
         with open(f'./{dataset_name.lower()}/{breeds_setting}/{task}.json','r') as fp:
             params = json.load(fp)
     else:

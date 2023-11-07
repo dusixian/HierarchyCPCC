@@ -4,7 +4,9 @@ from typing import *
 
 from hierarchy.data import get_k_shot
 import cifar.data as cifar
+import cifar10.data as cifar10
 import cifar12.data as cifar12
+import breeds2.data as breeds2
 import mnist.data as mnist
 import breeds.data as breeds
 # import inaturalist.data as inat
@@ -54,6 +56,8 @@ def make_dataloader(num_workers : int, batch_size : int, task : str, dataset : s
         train_loader, test_loader = mnist.make_dataloader(num_workers, batch_size, task, case)
     elif dataset == 'CIFAR':
         train_loader, test_loader = cifar.make_dataloader(num_workers, batch_size, task)
+    elif dataset == 'CIFAR10':
+        train_loader, test_loader = cifar10.make_dataloader(num_workers, batch_size, task)
     elif dataset == 'CIFAR12':
         if difficulty is None:
             raise ValueError("Please specify --difficulty")
@@ -64,4 +68,8 @@ def make_dataloader(num_workers : int, batch_size : int, task : str, dataset : s
         if breeds_setting is None:
             raise ValueError("Please specify --breeds_setting as any of living17 | entity13 | entity30 | nonliving26")
         train_loader, test_loader = breeds.make_dataloader(num_workers, batch_size, task, breeds_setting)
+    elif dataset == 'BREEDS2':
+        if breeds_setting is None:
+            raise ValueError("Please specify --breeds_setting as any of living17 | entity13 | entity30 | nonliving26")
+        train_loader, test_loader = breeds2.make_dataloader(num_workers, batch_size, task, breeds_setting)
     return train_loader, test_loader

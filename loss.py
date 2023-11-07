@@ -327,62 +327,6 @@ def build_tree_and_compute_path(representations, target_fine, fine2mid, fine2coa
     return torch.tensor(pairwise_dists).to(representations.device)
 
 
-# def self_sliced(X, Y, n_projections, p=2):
-#     d = X.shape[1]
-#     projections = ot.sliced.get_random_projections(d, n_projections, 0, backend=ot.backend.get_backend(X), type_as=X)
-#     X_projections = torch.matmul(X, projections)
-#     Y_projections = torch.matmul(Y, projections)
-#     sum_emd = []
-#     # sum_emd2 = []
-#     for X_p, Y_p in zip(X_projections, Y_projections):
-#         sum_emd.append(one_dSW.apply(X_p, Y_p))
-#         # sum_emd2.append(ot.wasserstein_1d(X_p, Y_p))
-#     # print('sum_emd: ', sum_emd)
-#     # print('sum_emd2: ', sum_emd2)
-#     # assert(0==1)
-#     sum_emd = torch.stack(sum_emd)
-#     return (torch.sum(sum_emd) / n_projections) ** (1.0 / p)
-
-# class one_dSW(torch.autograd.Function):
-
-#     @staticmethod
-#     def forward(ctx, X_s_projection, X_t_projection):
-#         emd_value, flow_matrix = ot.lp.emd2_1d(X_s_projection, X_t_projection, log=True, metric='euclidean')
-#         emd_value = torch.tensor(emd_value, dtype=torch.float32).to(X_s_projection.device)
-        
-#         ctx.save_for_backward(torch.tensor(flow_matrix['G'], dtype=torch.float32).to(X_s_projection.device), X_s_projection, X_t_projection)
-#         return emd_value
-
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         flow_matrix, X_s_projection, X_t_projection = ctx.saved_tensors
-
-#         n = X_s_projection.shape[0]
-#         m = X_t_projection.shape[0]
-
-#         G_X = torch.zeros(n, m, n).to(X_s_projection.device)
-#         G_Y = torch.zeros(n, m, m).to(X_s_projection.device)
-
-#         for i in range(n):
-#             for j in range(m):
-#                 if X_s_projection[i] > X_t_projection[j]:
-#                     G_X[i, j, i] = 1
-#                 elif X_s_projection[i] < X_t_projection[j]:
-#                     G_X[i, j, i] = -1
-
-#                 if X_s_projection[i] > X_t_projection[j]:
-#                     G_Y[i, j, j] = -1
-#                 elif X_s_projection[i] < X_t_projection[j]:
-#                     G_Y[i, j, j] = 1
-
-#         df_dX = torch.sum(flow_matrix.unsqueeze(-1) * G_X, dim=(0, 1))
-#         df_dY = torch.sum(flow_matrix.unsqueeze(-1) * G_Y, dim=(0, 1))
-
-#         df_dX *= grad_output
-#         df_dY *= grad_output
-
-#         return df_dX, df_dY
-
 def simple_torch(P, x, y):
     x = x.view(-1, 1)
     y = y.view(1, -1)
@@ -400,10 +344,6 @@ class SlicedWasserstein(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, Y, n_projections, p=2):
         d = X.shape[1]
-        # print('X.shape[0]: ', X.shape[0])
-        # print('X.shape[1]: ', X.shape[1])
-        # print('Y.shape[1]: ', Y.shape[1])
-        # assert(0==1)
         projections = ot.sliced.get_random_projections(d, n_projections, 0, backend=ot.backend.get_backend(X), type_as=X)
         
         X_projections = torch.matmul(X, projections)
