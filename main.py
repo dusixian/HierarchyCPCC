@@ -2174,15 +2174,15 @@ if __name__ == '__main__':
     #         main()
     if dataset_name == 'BREEDS' or dataset_name == 'BREEDS2':
         breeds_setting = args.breeds_setting
-        # assert breeds_setting in ['living17','nonliving26','entity13','entity30']
-        for breeds_setting in ['living17','nonliving26','entity13','entity30']:
-            save_dir = root + '/' + timestamp + '/' + breeds_setting
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir)
-            checkpoint_dir = save_dir + '/checkpoint'
-            if not os.path.exists(checkpoint_dir):
-                os.makedirs(checkpoint_dir)
-            main()
+        assert breeds_setting in ['living17','nonliving26','entity13','entity30']
+        # for breeds_setting in ['living17','nonliving26','entity13','entity30']:
+        save_dir = root + '/' + timestamp + '/' + breeds_setting
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        checkpoint_dir = save_dir + '/checkpoint'
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir)
+        main()
     
     else:
         breeds_setting = None
