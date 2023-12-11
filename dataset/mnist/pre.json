@@ -1,5 +1,5 @@
 {
-    "epochs": 70,
+    "epochs": 10,
     "optimizer": {
         "lr": 0.05,
         "momentum": 0.9,

@@ -39,7 +39,7 @@ import seaborn as sns
 
 from model import init_model
 from data import make_kshot_loader, make_dataloader
-from loss import CPCCLoss, QuadrupletLoss, GroupLasso, SK, SlicedWasserstein_np, sinkhorn, compute_flow_symmetric
+from old.loss_old import CPCCLoss, QuadrupletLoss, GroupLasso, SK, SlicedWasserstein_np, sinkhorn, compute_flow_symmetric
 from param import init_optim_schedule, load_params
 from utils import get_layer_prob_from_fine, seed_everything
 
@@ -451,34 +451,6 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
             
             wandb.log(log_dict)
             val_loss = sum(test_losses_ce)/len(test_losses_ce)
-            
-            # # in case of model val_loss never decrease after half way training
-            # if epoch == (epochs // 2):
-            #     torch.save({
-            #         'epoch': epoch,
-            #         'model_state_dict': model.state_dict(),
-            #         'optimizer_state_dict': optimizer.state_dict(),
-            #         'loss': val_loss,
-            #     }, save_dir+'/best_model.pth')
-
-            # if val_loss < min_val_loss:
-            #     min_val_loss = val_loss
-            #     if epoch > (epochs // 2):
-            #         torch.save({
-            #             'epoch': epoch,
-            #             'model_state_dict': model.state_dict(),
-            #             'optimizer_state_dict': optimizer.state_dict(),
-            #             'loss': val_loss,
-            #         }, save_dir+'/best_model.pth')
-
-            #         epochs_no_improve = 0 
-
-            # else:
-            #     if epoch > (epochs // 2):
-            #         epochs_no_improve += 1
-            #         if epochs_no_improve > early_stop_patience:
-            #             print('Early stopping!')
-            #             break
         
 
         # checkpoint = torch.load(save_dir+'/best_model.pth')
@@ -1153,399 +1125,129 @@ def plot_top_k_images(query_image, retrieved_images, query_idx, save_dir, k=5):
     plt.close()
 
 def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader, 
-                        test_loader, exp_name, device, 
-                        dataset_name):
-    # check precision/recall
-    # plot knn top 10 images, save top 10 id
-    train_dataset = train_loader.dataset 
-    
-    if cpcc:
-        exp_name = exp_name + 'CPCC'
+                               test_loader, exp_name, device, dataset_name, levels):
+    """
+    Function to perform image retrieval and calculate similarity at a specified level (coarse or fine).
 
+    Parameters:
+    - seeds: Number of seeds.
+    - save_dir: Directory to save output.
+    - split: Data split.
+    - task: Task name.
+    - task_name: source or train.
+    - train_loader: Training data loader.
+    - test_loader: Testing data loader.
+    - exp_name: Experiment name.
+    - device: Computation device.
+    - dataset_name: Name of the dataset.
+    - levels: Levels of retrieval (in ['coarse', 'mid', 'fine']).
+    """
+    
+    # Initialization
+    train_dataset = train_loader.dataset
     mAPs = []
     precisions = []
     recalls = []
-    lca_corrects = []
-    lca_mistakes = []
-    coarse_targets_map = train_dataset.coarse_map
 
-    # load model trained on coarse class
-    for seed in range(seeds):
-
-        if ss_test == 1:
-            model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
+    # Loop over seeds
+    for level in levels:
+        # Check if the level is valid
+        assert level in ['coarse', 'mid', 'fine'], f"Invalid level: {level}"
+        for seed in range(seeds):
+            # Load model based on level
+            if level == 'coarse':
+                target_num = len(train_dataset.coarse_names)
+            elif level == 'mid':
+                target_num = len(train_dataset.mid_names)
+            else:
+                assert level == 'fine'
+                target_num = len(train_dataset.fine_names)
+            model = init_model(dataset_name, [target_num], device)
             model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
             model.eval()
 
-        else:
-            model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
-            model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
-            model.eval()
-    
-        aps = []
-        prototypes = {i:[] for i in range(len(train_dataset.coarse_names))}
-        test_scores = {i:[] for i in range(len(train_dataset.coarse_names))} # cosine scores sorted by id in the dataset
-        test_truth = {i:[] for i in range(len(train_dataset.coarse_names))}
-        retrieval_results = []
-        all_target_coarse = []
-        
-        with torch.no_grad():
-            tr_rep = []
-            tr_fine = []
-            te_rep = []
-            te_fine = []
-            for item in train_loader:
-                data = item[0].to(device)
-                target_coarse = item[-3]
-                tr_fine.append(item[-1].detach().cpu().numpy())
-                if ss_test:
-                    feature, _ = model(data)
-                    feature = feature.cpu().detach().numpy()
-                    tr_rep.append(feature)
-                    for it, t in enumerate(target_coarse):
-                        prototypes[t.item()].append(feature[it])
-                else:
-                    representation, output_fine = model(data)
-                    tr_rep.append(representation.detach().cpu().numpy())
-                    prob_fine = F.softmax(output_fine, dim=1)
-                    prob_coarse = get_layer_prob_from_fine(prob_fine, coarse_targets_map)
-                    for it, t in enumerate(target_coarse):
-                        prototypes[t.item()].append(representation[it].cpu().numpy())
-            
-            # for each coarse class, calculate train representation mean
-            for i in range(len(train_dataset.coarse_names)):
-                prototypes[i] = np.mean(np.stack(prototypes[i],axis=0),axis=0)
+            # Initialize prototypes and other variables
+            prototypes = {i: [] for i in range(target_num)}
+            test_scores = {i: [] for i in range(target_num)}
+            test_truth = {i: [] for i in range(target_num)}
+            all_targets = []
+            retrieval_results = []
 
-            # calculate cosine similarity of the train representation mean and test images embedding
-            # and generate ground truth
-            for item in test_loader:
-                data = item[0].to(device)
-                target_coarse = item[-3]
-                all_target_coarse.extend(target_coarse.cpu().numpy())
-                test_embs,_ = model(data)
-                test_embs = test_embs.cpu().detach().numpy()
-                te_rep.append(test_embs)
-                te_fine.append(item[-1].cpu().numpy())
-                for it, t in enumerate(target_coarse):
-                    test_emb = test_embs[it]
-                    similarities = []
-                    for i in range(len(train_dataset.coarse_names)):
-                        similarity = np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i]))
-                        similarities.append(similarity)
-                        test_scores[i].append(np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i])))
-                        test_truth[i].append(int(t.item() == i))
-                    retrieval_results.append(np.argmax(similarities))
-            
-            # for each coarse class, get AP
-            for i in range(len(train_dataset.coarse_names)):
-                aps.append(average_precision_score(test_truth[i], test_scores[i]))
-
-            tr_rep = np.concatenate(tr_rep)
-            tr_fine = np.concatenate(tr_fine)
-            te_rep = np.concatenate(te_rep)
-            te_fine = np.concatenate(te_fine)
-            coarse_map_test = test_loader.dataset.coarse_map
-            coarse_map_train = train_loader.dataset.coarse_map
-            # print('coarse_map: ', len(coarse_map))
-            # print('test_loader.dataset.dataset.coarse_map: ', len(test_loader.dataset.dataset.coarse_map))
-
-            lca_total = 0
-            len_mistakes = 0
-            for i in tqdm(range(len(te_fine))):
-                # for each test point find the closest l2 train data check if it is the same fine label
-                # if it is the same coarse label by checking lca the smaller the better
-                query = te_rep[i]
-                truth_fine = te_fine[i]
-                truth_coarse = coarse_map_test[truth_fine]
-                dist = np.linalg.norm(tr_rep - query, axis=1)
-                closest_fine = tr_fine[np.argmin(dist)]
-                closest_coarse = coarse_map_train[closest_fine]
-                if truth_fine == closest_fine:
-                    pass
-                elif truth_fine != closest_fine:
-                    if truth_coarse == closest_coarse:
-                        len_mistakes += 1
-                        lca_total += 1
+            # Process train_loader to create prototypes
+            with torch.no_grad():
+                for item in train_loader:
+                    data = item[0].to(device)
+                    if level == 'coarse':
+                        target = item[-3]
+                    elif level == 'mid':
+                        target = item[-2]
                     else:
-                        len_mistakes += 1
-                        lca_total += 2
-            
-            # include correct
-            lca_correct = lca_total/len(test_loader.dataset)
-            lca_mistake = lca_total/len_mistakes
+                        assert level == 'fine'
+                        target = item[-1]
+                    representation, _ = model(data)
+                    for it, t in enumerate(target):
+                        prototypes[t.item()].append(representation[it].cpu().numpy())
 
-            # average to get mAP
-            mAP = np.mean(aps)
+                # Calculate mean of prototypes
+                for i in range(target_num):
+                    prototypes[i] = np.mean(np.stack(prototypes[i], axis=0), axis=0)
+
+                # Process test_loader for retrieval
+                for item in test_loader:
+                    data = item[0].to(device)
+                    if level == 'coarse':
+                        target = item[-3]
+                    elif level == 'mid':
+                        target = item[-2]
+                    else:
+                        assert level == 'fine'
+                        target = item[-1]
+                    all_targets.extend(target.cpu().numpy())
+                    test_embs, _ = model(data)
+                    test_embs = test_embs.cpu().detach().numpy()
+                    
+                    for it, t in enumerate(target):
+                        test_emb = test_embs[it]
+                        similarities = [np.dot(test_emb, prot) / (np.linalg.norm(test_emb) * np.linalg.norm(prot))
+                                        for prot in prototypes.values()]
+                        test_scores[i].append(similarities[t.item()])
+                        test_truth[i].append(int(t.item() == i))
+                        retrieval_results.append(np.argmax(similarities))
+
+                # Compute metrics
+                for i in range(target_num):
+                    mAPs.append(average_precision_score(test_truth[i], test_scores[i]))
+
+            # Compute average metrics
+            mAP = np.mean(mAPs)
+            precision = precision_score(all_targets, retrieval_results, average='macro')
+            recall = recall_score(all_targets, retrieval_results, average='macro')
+
+            # Append results for each seed
             mAPs.append(mAP)
-
-            # Calculate precision and recall
-            precision = precision_score(all_target_coarse, retrieval_results, average='macro')
-            recall = recall_score(all_target_coarse, retrieval_results, average='macro')
             precisions.append(precision)
             recalls.append(recall)
-            lca_corrects.append(lca_correct)
-            lca_mistakes.append(lca_mistake)
 
-            # TODO: for each coarse class plot top k image, decide k later
-            # if seed == 0:
-            #     k = 10
-            #     for idx, (data, _, target_coarse, _, _) in enumerate(test_loader):
-            #         data = data.to(device)
-            #         target_coarse = target_coarse.cpu().detach().numpy()
-            #         test_embs, _ = model(data)
-            #         test_embs = test_embs.cpu().detach().numpy()
-            #         for it, t in enumerate(target_coarse):
-            #             test_emb = test_embs[it]
-            #             similarities = []
-            #             for i in range(len(train_dataset.coarse_names)):
-            #                 similarity = np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i]))
-            #                 similarities.append(similarity)
-            #             top_k_indices = np.argsort(similarities)[-k:]
-            #             top_k_images = [train_loader.dataset[i][0] for i in top_k_indices]
-            #             plot_top_k_images(data[it].cpu(), top_k_images, idx * len(test_loader) + it, save_dir, k)
+        # Output results
+        out = {
+            'mAP': mAPs,
+            'mean_mAP': np.mean(mAPs),
+            'std_mAP': np.std(mAPs),
+            'precisions': precisions,
+            'mean_precision': np.mean(precisions),
+            'std_precision': np.std(precisions),
+            'recalls': recalls,
+            'mean_recall': np.mean(recalls),
+            'std_recall': np.std(recalls)
+        }
 
-    
-    out = dict()
-    out['mAP'] = mAPs
-    out['mean_mAP'] = np.average(mAPs)
-    out['std_mAP'] = np.std(mAPs)
-    out['precisions'] = precisions
-    out['mean_precision'] = np.average(precisions)
-    out['std_precision'] = np.std(precisions)
-    out['recalls'] = recalls
-    out['mean_recall'] = np.average(recalls)
-    out['std_recall'] = np.std(recalls)
-    out['lca_mistake'] = lca_mistakes
-    out['mean_lca_mistake'] = np.average(lca_mistakes)
-    out['std_lca_mistake'] = np.std(lca_mistakes)
-    out['lca_correct'] = lca_corrects
-    out['mean_lca_correct'] = np.average(lca_corrects)
-    out['std_lca_correct'] = np.std(lca_corrects)
-    with open(save_dir+f'/{task_name}_retrieval_evaluation.json', 'w') as fp:
-        json.dump(out, fp, indent=4)
-    return out
+        # Save results to file
+        save_filename = f'/{task_name}_retrieval_evaluation_{level}.json'
+        with open(save_dir + save_filename, 'w') as fp:
+            json.dump(out, fp, indent=4)
 
-def retrieval_similarity_fine(seeds, save_dir, split, task, task_name, train_loader, 
-                        test_loader, exp_name, device, 
-                        dataset_name):
-    # check precision/recall
-    # plot knn top 10 images, save top 10 id
-    train_dataset = train_loader.dataset 
-    
-    if cpcc:
-        exp_name = exp_name + 'CPCC'
+    return 
 
-    mAPs = []
-    precisions = []
-    recalls = []
-    lca_corrects = []
-    lca_mistakes = []
-
-    # load model trained on fine class
-    for seed in range(seeds):
-
-        model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
-        model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
-        model.eval()
-    
-        aps = []
-        prototypes = {i:[] for i in range(len(train_dataset.fine_names))}
-        test_scores = {i:[] for i in range(len(train_dataset.fine_names))} # cosine scores sorted by id in the dataset
-        test_truth = {i:[] for i in range(len(train_dataset.fine_names))}
-        all_target_fine = []
-        
-        with torch.no_grad():
-            for item in train_loader:
-                data = item[0].to(device)
-                target_fine = item[-1]
-                representation, output_fine = model(data)
-                for it, t in enumerate(target_fine):
-                    prototypes[t.item()].append(representation[it].cpu().numpy())
-            
-            # for each fine class, calculate train representation mean
-            for i in range(len(train_dataset.fine_names)):
-                prototypes[i] = np.mean(np.stack(prototypes[i],axis=0),axis=0)
-
-            # calculate cosine similarity of the train representation mean and test images embedding
-            # and generate ground truth
-            for item in test_loader:
-                data = item[0].to(device)
-                target_fine = item[-1]
-                all_target_fine.extend(target_fine.cpu().numpy())
-                test_embs,_ = model(data)
-                test_embs = test_embs.cpu().detach().numpy()
-                for it, t in enumerate(target_fine):
-                    test_emb = test_embs[it]
-                    similarities = []
-                    for i in range(len(train_dataset.fine_names)):
-                        test_scores[i].append(np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i])))
-                        test_truth[i].append(int(t.item() == i))
-            
-            # for each fine class, get AP
-            for i in range(len(train_dataset.fine_names)):
-                aps.append(average_precision_score(test_truth[i], test_scores[i]))
-
-
-            # average to get mAP
-            mAP = np.mean(aps)
-            mAPs.append(mAP)
-    
-    out = dict()
-    out['mAP'] = mAPs
-    out['mean_mAP'] = np.average(mAPs)
-    out['std_mAP'] = np.std(mAPs)
-    with open(save_dir+f'/{task_name}_retrieval_evaluation_fine.json', 'w') as fp:
-        json.dump(out, fp, indent=4)
-    return out
-
-# def retrieval_similarity2(seeds, save_dir, split, task, task_name, train_loader, 
-#                         test_loader, exp_name, device, 
-#                         dataset_name):
-#     def grad_cos(model, criterion, x1, y1, x2, y2):
-    #     model.zero_grad()
-    #     representation1, output_one1 = model(x1)
-    #     loss1 = criterion(output_one1, y1)
-    #     loss1.backward(retain_graph=True)
-    #     # print('loss1=', loss1.item())
-    #     # for p in model.parameters():
-    #     #     print(p.grad)
-    #     grad1 = torch.cat([p.grad.view(-1) if p.grad is not None else torch.zeros_like(p).view(-1) for p in model.parameters()])
-
-    #     model.zero_grad()
-    #     representation2, output_one2 = model(x2)
-    #     loss2 = criterion(output_one2, y2)
-    #     loss2.backward()
-    #     grad2 = torch.cat([p.grad.view(-1) if p.grad is not None else torch.zeros_like(p).view(-1) for p in model.parameters()])
-
-    #     return cosine_similarity(grad1, grad2)
-    # train_dataset = train_loader.dataset 
-
-    # if cpcc:
-    #     exp_name = exp_name + 'CPCC'
-
-    # results = {
-    #     # 'mean_sim': {
-    #     #     'mAPs': [],
-    #     #     'precisions': [],
-    #     #     'recalls': []
-    #     # },
-    #     'cos_sim': {
-    #         'mAPs': [],
-    #         'precisions': [],
-    #         'recalls': [],
-    #         # 'label_ranking_average_precision': []
-    #     },
-    #     # 'grad_cos': {
-    #     #     'mAPs': [],
-    #     #     'precisions': [],
-    #     #     'recalls': [],
-    #     #     'label_ranking_average_precision': []
-    #     # }
-    # }
-
-    # coarse_targets_map = train_dataset.coarse_map
-    # criterion = torch.nn.CrossEntropyLoss()
-
-    # for seed in range(seeds):
-    #     # Load model and initialize variables as before
-    #     model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
-    #     model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
-    #     model.eval()
-
-    #     all_retrieved_indices = []
-    #     all_scores = []
-    #     all_target_coarse = []
-    #     for item in tqdm(test_loader):
-    #         data = item[0].to(device)
-    #         target_coarse = item[-3]
-    #         all_target_coarse.extend(target_coarse.cpu().numpy())
-    #         test_embs, _ = model(data)
-    #         test_embs = test_embs.cpu().detach().numpy()
-            
-    #         max_similarities = []
-    #         retrieved_indices = []
-    #         scores = []
-    #         for it, t in enumerate(target_coarse):
-    #             test_emb = test_embs[it]
-    #             similarities = []
-    #             for train_item in train_loader:
-    #                 train_data = train_item[0].to(device)
-    #                 train_embs, _ = model(train_data)
-    #                 train_embs = train_embs.cpu().detach().numpy()
-    #                 for train_emb in train_embs:
-    #                     similarity = np.dot(test_emb, train_emb) / (np.linalg.norm(test_emb) * np.linalg.norm(train_emb))
-    #                     similarities.append(similarity)
-    #             top_5_indices = np.argsort(similarities)[-5:]
-    #             scores.append([similarities[i] for i in top_5_indices])
-    #             retrieved_indices.append(top_5_indices[0])
-    #             max_similarities.append(np.max(similarities))
-    #         all_retrieved_indices.extend(retrieved_indices)
-    #         all_scores.extend(scores)
-
-    #     # Compute metrics for cosine similarity method
-    #     precision = precision_score(all_target_coarse, all_retrieved_indices, average='macro')
-    #     recall = recall_score(all_target_coarse, all_retrieved_indices, average='macro')
-    #     mAP = np.mean(max_similarities)
-    #     # lraps = label_ranking_average_precision_score(np.array(all_target_coarse)[:, np.newaxis], np.array(all_scores))
-
-    #     results['cos_sim']['mAPs'].append(mAP)
-    #     results['cos_sim']['precisions'].append(precision)
-    #     results['cos_sim']['recalls'].append(recall)
-        # results['cos_sim']['label_ranking_average_precision'].append(lraps)
-
-
-        # Gradient cosine similarity method
-        # all_retrieved_indices = []
-        # all_scores = []
-        # all_target_coarse = []
-        # for item in test_loader:
-        #     data = item[0].to(device)
-        #     target_coarse = item[-3]
-        #     all_target_coarse.extend(target_coarse.cpu().numpy())
-        #     test_embs, _ = model(data)
-            
-        #     max_similarities = []
-        #     retrieved_indices = []
-        #     scores = []
-
-        #     similarities_matrix = []
-
-        #     for train_item in train_loader:
-        #         train_data = train_item[0].to(device)
-        #         train_target = train_item[-3]
-        #         similarity = grad_cos(model, nn.CrossEntropyLoss().to(device), data, target_coarse.to(device), train_data, train_target.to(device))
-        #         similarities_matrix.append(similarity)
-
-        #     similarities_matrix = torch.stack(similarities_matrix, dim=1)
-
-        #     for i in range(similarities_matrix.size(0)):
-        #         similarities = similarities_matrix[i]
-        #         top_5_indices = torch.argsort(similarities, descending=True)[:5]
-        #         scores.append(similarities[top_5_indices].cpu().numpy())
-        #         retrieved_indices.append(top_5_indices[0].item())
-        #         max_similarities.append(torch.max(similarities).item())
-
-        #     all_retrieved_indices.extend(retrieved_indices)
-        #     all_scores.extend(scores)
-
-        # # Compute metrics for gradient cosine similarity method
-        # precision = precision_score(all_target_coarse, all_retrieved_indices, average='macro')
-        # recall = recall_score(all_target_coarse, all_retrieved_indices, average='macro')
-        # mAP = np.mean(max_similarities)
-        # lraps = label_ranking_average_precision_score(np.array(all_target_coarse)[:, np.newaxis], np.array(all_scores))
-
-        # results['grad_cos']['mAPs'].append(mAP)
-        # results['grad_cos']['precisions'].append(precision)
-        # results['grad_cos']['recalls'].append(recall)
-        # results['grad_cos']['label_ranking_average_precision'].append(lraps)
-
-        # ... [Compute metrics for mean similarity and cosine similarity methods as before] ...
-
-    # Save results to file
-    # with open(save_dir + f'/{task_name}_retrieval_evaluation2.json', 'w') as fp:
-    #     json.dump(results, fp, indent=4)
-
-    # return results
 
 def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_name : str, seed : int):
     dataset = dataloader.dataset
@@ -1805,25 +1507,6 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
             plt.savefig(save_dir+f"/pearM_seed{seed}.pdf")
             plt.clf()
         return
-        # coarse_targets_map = dataset.coarse_map
-        # finecls2names = dataset.fine_names
-        
-        # num_samples = len(targets_fineL)
-
-        # index_label_pairs = [(i, targets_fineL[i], coarse_targets_map[targets_fineL[i]]) for i in range(num_samples)]
-        # index_label_pairs.sort(key=lambda x: (x[2], x[1]))
-        # sorted_preds = np.array([probL[i] for i, _, _ in index_label_pairs])
-
-        # correlation_matrix = np.zeros((num_samples, num_samples))
-
-        # for i in range(num_samples):
-        #     for j in range(num_samples):
-        #         if i != j:
-        #             correlation_matrix[i][j] = pearsonr(sorted_preds[i], sorted_preds[j])[0]
-
-        # plt.imshow(correlation_matrix, cmap='hot', interpolation='nearest')
-        # plt.colorbar()
-        # plt.show()
     
     def plot_distM(dataL, targets_fineL, dataset): 
         '''
@@ -2018,19 +1701,16 @@ def main():
                 train_loader, test_loader = make_dataloader(num_workers, batch_size, 'in_split_pretrain', dataset_name, case, breeds_setting, difficulty)
             pretrain_objective(train_loader, test_loader, device, save_dir, seed, split, cpcc, exp_name, epochs, task, dataset_name, breeds_setting, hyper)
             
-            if ss_test:
-                continue
             # down
             if dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
                 levels = ['fine']
             else:
                 levels = ['mid', 'fine']
-            # for breeds2, we don't do fine-tune
-            if dataset_name != 'BREEDS2':
-                for level in levels: 
-                    hyper = load_params(dataset_name, 'down', level, breeds_setting)
-                    epochs = hyper['epochs']
-                    downstream_transfer(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting, hyper, epochs)
+                
+            for level in levels: 
+                hyper = load_params(dataset_name, 'down', level, breeds_setting)
+                epochs = hyper['epochs']
+                downstream_transfer(save_dir, seed, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting, hyper, epochs)
         
         elif split == 'full': 
             hyper = load_params(dataset_name, 'pre', breeds_setting=breeds_setting)
@@ -2038,26 +1718,17 @@ def main():
             train_loader, test_loader = make_dataloader(num_workers, batch_size, 'full', dataset_name, case, breeds_setting, difficulty) # full
             pretrain_objective(train_loader, test_loader, device, save_dir, seed, split, cpcc, exp_name, epochs, task, dataset_name, breeds_setting, hyper)
 
-    if ss_test:
+    if task == 'sub':
+        # TODO: check levels
+        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
+            levels = ['coarse', 'fine']
+        elif dataset_name == 'BREEDS2':
+            levels = ['coarse', 'mid', 'fine']
+        else:
+            levels = ['coarsest','coarse','fine'] 
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
-        levels = ['coarse'] # Let' simplify all exps for now
-        downstream_zeroshot(seeds, save_dir, split, task, 'sub_split_pretrain', train_loader, test_loader, levels, exp_name, device, dataset_name)
-        retrieve_final_metrics(test_loader, dataset_name, 'sub_split_pretrain')
-        retrieval_similarity(seeds, save_dir, split, task, 'sub_split_pretrain', train_loader, test_loader, exp_name, device, dataset_name)
-
-        # st downstream zero shot
-        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
-        downstream_zeroshot(seeds, save_dir, split, task, 'sub_split_zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
-        retrieval_similarity(seeds, save_dir, split, task, 'sub_split_zero_shot', train_loader, test_loader, exp_name, device, dataset_name)
-
-        return 
-
-    elif task == 'sub':
-        train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
-        if dataset_name != 'BREEDS2':
-            retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
-            retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
-        retrieval_similarity_fine(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name)
+        retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
+        retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name, levels)
         better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader)
         retrieve_final_metrics(test_loader, dataset_name, 'pretrain')
     
@@ -2071,10 +1742,7 @@ def main():
         else:
             levels = ['coarsest','coarse'] 
         train_loader, test_loader = make_dataloader(num_workers, batch_size, f'{task}_split_zero_shot', dataset_name, case, breeds_setting, difficulty)
-        if dataset_name == 'BREEDS2':
-            retrieval_similarity_fine(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
-        else:
-            retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name)
+        retrieval_similarity(seeds, save_dir, split, task, 'target', train_loader, test_loader, exp_name, device, dataset_name, levels)
     elif task == '': # full
         if dataset_name == 'MNIST':
             if train_on_mid:
@@ -2091,7 +1759,6 @@ def main():
     downstream_zeroshot(seeds, save_dir, split, task, 'zero_shot', train_loader, test_loader, levels, exp_name, device, dataset_name)
     retrieve_final_metrics(test_loader, dataset_name, 'zero_shot')
 
-    # if (dataset_name == 'CIFAR') and (split == 'full'):
     if dataset_name == 'CIFAR12' or dataset_name == 'CIFAR':
         ood_detection(seeds, dataset_name, exp_name, task, split)
     
@@ -2164,16 +1831,6 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("device: ", device)
 
-    # if dataset_name == 'BREEDS':
-    #     # for breeds_setting in ['living17','nonliving26','entity13','entity30']:
-    #     for breeds_setting in ['living17']:
-    #         save_dir = root + '/' + timestamp + '/' + breeds_setting
-    #         if not os.path.exists(save_dir):
-    #             os.makedirs(save_dir)
-    #         checkpoint_dir = save_dir + '/checkpoint'
-    #         if not os.path.exists(checkpoint_dir):
-    #             os.makedirs(checkpoint_dir)
-    #         main()
     if dataset_name == 'BREEDS' or dataset_name == 'BREEDS2':
         breeds_setting = args.breeds_setting
         assert breeds_setting in ['living17','nonliving26','entity13','entity30']

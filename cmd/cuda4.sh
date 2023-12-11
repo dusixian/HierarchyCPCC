@@ -1,2 +1,0 @@
-CUDA_VISIBLE_DEVICES=4 python main.py --timestamp BREEDS_no_final --dataset BREEDS --exp_name ERM --split split --task sub --cpcc 0 --num_workers 12  --seeds 3 --root /data/common/cindy2000_sh --ss_test 1 --coarse_ce 1;
-CUDA_VISIBLE_DEVICES=4 python main.py --timestamp BREEDS_l2_final --dataset BREEDS --exp_name ERM --split split --task sub --cpcc 1 --emd 0 --num_workers 12  --seeds 3 --root /data/common/cindy2000_sh --ss_test 1 --coarse_ce 1

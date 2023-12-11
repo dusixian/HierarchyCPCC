@@ -3,12 +3,12 @@ from torch.utils.data import DataLoader
 from typing import *
 
 from hierarchy.data import get_k_shot
-import cifar.data as cifar
-import cifar10.data as cifar10
-import cifar12.data as cifar12
-import breeds2.data as breeds2
-import mnist.data as mnist
-import breeds.data as breeds
+import dataset.cifar.data as cifar
+import dataset.cifar10.data as cifar10
+import dataset.cifar12.data as cifar12
+import dataset.breeds2.data as breeds2
+import dataset.mnist.data as mnist
+import dataset.breeds.data as breeds
 # import inaturalist.data as inat
 
 
@@ -62,8 +62,8 @@ def make_dataloader(num_workers : int, batch_size : int, task : str, dataset : s
         if difficulty is None:
             raise ValueError("Please specify --difficulty")
         train_loader, test_loader = cifar12.make_dataloader(num_workers, batch_size, task, difficulty)
-    elif dataset == 'INaturalist12':
-        train_loader, test_loader = inat.make_dataloader(num_workers, batch_size, task)
+    # elif dataset == 'INaturalist12':
+    #     train_loader, test_loader = inat.make_dataloader(num_workers, batch_size, task)
     elif dataset == 'BREEDS':
         if breeds_setting is None:
             raise ValueError("Please specify --breeds_setting as any of living17 | entity13 | entity30 | nonliving26")

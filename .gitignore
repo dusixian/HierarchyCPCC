@@ -132,7 +132,7 @@ dmypy.json
 wandb/
 
 # data
-data/
+dataset/data/
 
 # deprecated code
 old/
@@ -143,3 +143,6 @@ metric.py
 visualize_demo.ipynb
 visualize.py
 eval.py
+pot.ipynb
+.idea/
+tree_dataset/

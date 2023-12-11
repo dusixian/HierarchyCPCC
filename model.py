@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 
-import cifar.model as cifar
-import cifar10.model as cifar10
-import cifar12.model as cifar12
-import mnist.model as mnist
-import breeds.model as breeds
-import breeds2.model as breeds2
+import dataset.cifar.model as cifar
+import dataset.cifar10.model as cifar10
+import dataset.cifar12.model as cifar12
+import dataset.mnist.model as mnist
+import dataset.breeds.model as breeds
+import dataset.breeds2.model as breeds2
 
 from typing import *
 
