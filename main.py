@@ -1060,8 +1060,7 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_t
                     model = init_model(dataset_name, [len(train_dataset.coarse_names)], device)
                 else:
                     model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
-            # model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
-            model.load_state_dict(torch.load('/home/sixian/full_seed0.pth'))
+            model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
             model.eval()
             
             layer_accs = []
@@ -1631,8 +1630,7 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
     train_dataset = train_loader.dataset
     for seed in range(seeds):
         model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
-        # model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
-        model.load_state_dict(torch.load('/home/sixian/full_seed0.pth'))
+        model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
         model.eval()
 
         fine_accs = []
@@ -1834,6 +1832,7 @@ if __name__ == '__main__':
     if dataset_name == 'BREEDS' or dataset_name == 'BREEDS2':
         breeds_setting = args.breeds_setting
         assert breeds_setting in ['living17','nonliving26','entity13','entity30']
+        # for breeds_setting in ['living17','nonliving26','entity13','entity30']:
         save_dir = root + '/' + timestamp + '/' + breeds_setting
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
