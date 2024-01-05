@@ -77,7 +77,7 @@ class HierarchyBREEDS2(ImageFolder, Hierarchy):
         return img, 0, target_coarse, target_mid, target_fine
 
 def make_dataloader(num_workers : int, batch_size : int, task : str, breeds_setting: str, 
-                    info_dir : str = './breeds/imagenet_class_hierarchy/modified', 
+                    info_dir : str = './dataset/breeds2/imagenet_class_hierarchy/modified', 
                     data_dir : str = '/data/common/ImageNet/ILSVRC12012') -> Tuple[DataLoader, DataLoader]:
     '''
     Args:

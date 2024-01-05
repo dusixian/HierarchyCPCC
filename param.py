@@ -18,10 +18,10 @@ def load_params(dataset_name : str, task : str, layer : str = None,
     '''
     reset = {}
     if dataset_name == 'BREEDS' or dataset_name == 'BREEDS2':
-        with open(f'./{dataset_name.lower()}/{breeds_setting}/{task}.json','r') as fp:
+        with open(f'./dataset/{dataset_name.lower()}/{breeds_setting}/{task}.json','r') as fp:
             params = json.load(fp)
     else:
-        with open(f'./{dataset_name.lower()}/{task}.json', 'r') as fp:
+        with open(f'./dataset/{dataset_name.lower()}/{task}.json', 'r') as fp:
             params = json.load(fp)
     if layer is not None:
         reset['epochs'] = params[layer]['epochs']

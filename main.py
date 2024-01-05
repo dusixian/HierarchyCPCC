@@ -39,7 +39,8 @@ import seaborn as sns
 
 from model import init_model
 from data import make_kshot_loader, make_dataloader
-from old.loss_old import CPCCLoss, QuadrupletLoss, GroupLasso, SK, SlicedWasserstein_np, sinkhorn, compute_flow_symmetric
+from loss import CPCCLoss, QuadrupletLoss, GroupLasso
+from emd.emd_methods import SlicedWasserstein_np, sinkhorn, compute_flow_symmetric
 from param import init_optim_schedule, load_params
 from utils import get_layer_prob_from_fine, seed_everything
 
@@ -900,6 +901,10 @@ def retrieve_downstream_metrics(save_dir : str, seeds : int, device : torch.devi
                                 exp_name : str, num_workers : int, task : str, 
                                 dataset_name : str, case : int, breeds_setting : str):
 
+    if os.path.exists(save_dir+"/downstream_metrics.json"):
+        print("retrieve_downstream_metrics: Skipped.")
+        return
+    
     train_loader, test_loader = make_kshot_loader(num_workers, batch_size, 1, level, 
                                                 task, seeds, dataset_name, case, breeds_setting, difficulty)
     dataset = train_loader.dataset.dataset
@@ -1018,6 +1023,10 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_t
     
     # If all classes in test loader at level are already seen in train loader
     # try to use train set's label hierarchy for zero shot classification
+
+    if os.path.exists(save_dir+f'/{save_name}.json'):
+        print("downstream_zeroshot: Skipped.")
+        return
     
     train_dataset = source_train_loader.dataset 
     test_dataset = target_test_loader.dataset
@@ -1144,12 +1153,12 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
     
     # Initialization
     train_dataset = train_loader.dataset
-    mAPs = []
-    precisions = []
-    recalls = []
 
     # Loop over seeds
     for level in levels:
+        mAPs = []
+        precisions = []
+        recalls = []
         # Check if the level is valid
         assert level in ['coarse', 'mid', 'fine'], f"Invalid level: {level}"
         for seed in range(seeds):
@@ -1161,11 +1170,13 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             else:
                 assert level == 'fine'
                 target_num = len(train_dataset.fine_names)
-            model = init_model(dataset_name, [target_num], device)
+
+            model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
             model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
             model.eval()
 
             # Initialize prototypes and other variables
+            aps = []
             prototypes = {i: [] for i in range(target_num)}
             test_scores = {i: [] for i in range(target_num)}
             test_truth = {i: [] for i in range(target_num)}
@@ -1176,7 +1187,7 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             with torch.no_grad():
                 for item in train_loader:
                     data = item[0].to(device)
-                    if level == 'coarse':
+                    if level ==  'coarse':
                         target = item[-3]
                     elif level == 'mid':
                         target = item[-2]
@@ -1192,7 +1203,7 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                     prototypes[i] = np.mean(np.stack(prototypes[i], axis=0), axis=0)
 
                 # Process test_loader for retrieval
-                for item in test_loader:
+                for item in tqdm(test_loader):
                     data = item[0].to(device)
                     if level == 'coarse':
                         target = item[-3]
@@ -1207,18 +1218,25 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                     
                     for it, t in enumerate(target):
                         test_emb = test_embs[it]
-                        similarities = [np.dot(test_emb, prot) / (np.linalg.norm(test_emb) * np.linalg.norm(prot))
-                                        for prot in prototypes.values()]
-                        test_scores[i].append(similarities[t.item()])
-                        test_truth[i].append(int(t.item() == i))
+                        similarities = []
+                        for i in range(target_num):
+                            similarity = np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i]))
+                            similarities.append(similarity)
+                            test_scores[i].append(np.dot(test_emb, prototypes[i])/(np.linalg.norm(test_emb)*np.linalg.norm(prototypes[i])))
+                            test_truth[i].append(int(t.item() == i))
                         retrieval_results.append(np.argmax(similarities))
+                        # similarities = [np.dot(test_emb, prot) / (np.linalg.norm(test_emb) * np.linalg.norm(prot))
+                        #                 for prot in prototypes.values()]
+                        # test_scores[i].append(similarities[t.item()])
+                        # test_truth[i].append(int(t.item() == i))
+                        # retrieval_results.append(np.argmax(similarities))
 
                 # Compute metrics
                 for i in range(target_num):
-                    mAPs.append(average_precision_score(test_truth[i], test_scores[i]))
+                    aps.append(average_precision_score(test_truth[i], test_scores[i]))
 
             # Compute average metrics
-            mAP = np.mean(mAPs)
+            mAP = np.mean(aps)
             precision = precision_score(all_targets, retrieval_results, average='macro')
             recall = recall_score(all_targets, retrieval_results, average='macro')
 
@@ -1362,6 +1380,10 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
         '''
             Evaluate CPCC on full given test set.
         '''
+        if os.path.exists(save_dir+f'/{task_name}_CPCC.json'):
+            print(task_name, "_CPCC: Skipped.")
+            return
+
         def poincareFn(x, y):
             eps = 1e-5
             proj_x = x * (1 - eps) / (sum(x**2)**0.5)
@@ -1450,6 +1472,10 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
         '''
             Use coarse label to calculate silhouette score.
         '''
+        if os.path.exists(save_dir+f'/{task_name}_silhouette.json'):
+            print(task_name, "_silhouette: Skipped.")
+            return
+
         all_seed_res = []
         for (data, targets_coarse) in zip(dataL, targets_coarseL):
             res = silhouette_score(data, targets_coarse, metric='euclidean')
@@ -1618,10 +1644,14 @@ def retrieve_final_metrics(test_loader : DataLoader, dataset_name : str, task_na
     #     plot_distM(dataL, targets_oneL, dataset)
     #     plot_TSNE(dataL, targets_coarseL, dataset)
     # plot_pearM(probL, targets_oneL, dataset)
-    print(out_cpcc, out_silhouette)
-    return out_cpcc, out_silhouette
+    # print(out_cpcc, out_silhouette)
+    return
 
 def better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader):
+    if os.path.exists(save_dir+f'/lca_classification.json'):
+        print("lca_classification: Skipped.")
+        return
+
     lca_corrects = []
     lca_mistakes = []
     fine_res = []
@@ -1832,7 +1862,7 @@ if __name__ == '__main__':
     if dataset_name == 'BREEDS' or dataset_name == 'BREEDS2':
         breeds_setting = args.breeds_setting
         assert breeds_setting in ['living17','nonliving26','entity13','entity30']
-        # for breeds_setting in ['living17','nonliving26','entity13','entity30']:
+        # for breeds_setting in ['living17','nonliving26','entity13']:
         save_dir = root + '/' + timestamp + '/' + breeds_setting
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)

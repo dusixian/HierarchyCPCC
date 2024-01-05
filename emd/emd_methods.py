@@ -26,6 +26,17 @@ class SK(torch.autograd.Function):
         grad_cost_matrix = flow * grad_output
         
         return grad_cost_matrix, None, None
+
+def sinkhorn(M, reg, numItermax):
+    m, n = M.shape
+    if not isinstance(M, np.ndarray):
+        M_np = M.detach().cpu().numpy()
+    else:
+        M_np = M
+    a = np.full(m, 1 / m)
+    b = np.full(n, 1 / n)
+
+    return torch.tensor(ot.sinkhorn2(a, b, M_np, reg=reg, numItermax=numItermax))
     
 class OTEMDFunction(torch.autograd.Function):
     @staticmethod
