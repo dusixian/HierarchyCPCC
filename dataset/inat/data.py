@@ -16,11 +16,25 @@ class HierarchyINaturalist(INaturalist):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)                
         self.species_label = np.array(self.categories_map)
-        self.targets = [self.index[idx][0] for idx in range(len(self.index))] # species
-        self.fine_map = np.array(range(len(self.species_label)))
+        self.targets = [self.index[idx][0] for idx in range(len(self.index))] # index -> species
+        self.fine_map = np.array([d['class'] for d in self.species_label]) # species -> fine
         self.fine_names = np.array([str(x) for x in np.unique(self.fine_map)])
-        self.coarse_map = np.array([d['order'] for d in self.species_label])
+        self.targets = [self.fine_map[t] for t in self.targets] # index -> fine
+
+        self.ind2mid_map = np.array([d['phylum'] for d in self.species_label])
+
+        self.ind2coarse = np.array([d['kingdom'] for d in self.species_label])
+        # self.coarse_names = np.array([str(i) for i in range(len(np.unique(self.coarse_map)))])
+
+        self.mid_map = np.zeros(len(self.fine_names), dtype=int)
+        self.coarse_map = np.zeros(len(self.fine_names), dtype=int)
+        for index, fine_id in enumerate(self.fine_map):
+            self.mid_map[fine_id] = self.categories_map[index]['phylum']
+            self.coarse_map[fine_id] = self.categories_map[index]['kingdom']
+        
+        self.mid_names = np.array([str(i) for i in range(len(np.unique(self.mid_map)))])
         self.coarse_names = np.array([str(i) for i in range(len(np.unique(self.coarse_map)))])
+
         self.img_size = 224
         self.channel = 3
 
@@ -28,39 +42,41 @@ class HierarchyINaturalist(INaturalist):
         cat_id, fname = self.index[index]
         img = Image.open(os.path.join(self.root, self.all_categories[cat_id], fname))
 
-        target = self.targets
-
         if self.transform is not None:
             img = self.transform(img)
 
-        if self.target_transform is not None:
-            target = self.target_transform(target)
+        target_fine = self.targets[index]
+        target_mid = self.mid_map[target_fine]
+        target_coarse = self.coarse_map[target_fine]
+        target_coarsest = -1
 
-        target_fine = target
-        target_coarsest = target_coarse = target_mid = -1
+        assert self.target_transform is None
+
         return img, target_coarsest, target_coarse, target_mid, target_fine
+
 
 class HierarchyINaturalistSubset(HierarchyINaturalist):
     def __init__(self, indices : List[int], fine_classes : List[int], *args, **kw):
         super(HierarchyINaturalistSubset, self).__init__(*args, **kw)
         self.index = [self.index[i] for i in indices]
         
-        old_targets = list(np.array(self.targets)[indices]) # old fine targets, sliced
-        fine_classes = np.array(sorted(fine_classes)) # fine class id in HierarchyCIFAR index, range = 0-19
+        old_targets = list(np.array(self.targets)[indices]) # old fine targets, sliced. index -> old fine
+        fine_classes = np.array(sorted(fine_classes)) # fine class id in HierarchyINAT index
         self.fine_names = [self.fine_names[i] for i in fine_classes] # old fine names, sliced
-        self.fine_map = np.array(range(len(fine_classes))) # number of fine classes subset
-        self.targets = [list(fine_classes).index(i) for i in old_targets] # reset fine target id from 0
+        # self.fine_map = np.array(range(len(fine_classes))) # number of fine classes subset. new fine
+        # print('fine_map', self.fine_map)
+        self.targets = [list(fine_classes).index(i) for i in old_targets] # reset fine target id from 0. index -> new fine
 
         # reset other hierarchy level index, from 0
-        old_coarse_map = np.array([self.coarse_map[i] for i in fine_classes]) # subset of coarse fine map
+        old_coarse_map = np.array([self.coarse_map[i] for i in fine_classes]) # subset of coarse fine map. fine->coarse
         coarse_classes = np.unique(old_coarse_map)
         self.coarse_names = [self.coarse_names[cls] for cls in coarse_classes]
         self.coarse_map = np.array([list(coarse_classes).index(i) for i in old_coarse_map]) # argsort
 
-        old_mid_map = None
-        mid_classes = None
-        self.mid_names = None
-        self.mid_map = None
+        old_mid_map = np.array([self.mid_map[i] for i in fine_classes]) # subset of mid fine map
+        mid_classes = np.unique(old_mid_map)
+        self.mid_names = [self.mid_names[cls] for cls in mid_classes]
+        self.mid_map = np.array([list(mid_classes).index(i) for i in old_mid_map]) # argsort
 
         old_coarsest_map = None
         coarsest_classes = None
@@ -73,8 +89,8 @@ class HierarchyINaturalistSubset(HierarchyINaturalist):
 
 def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[DataLoader, DataLoader]:
     def make_full_dataset() -> Tuple[Dataset, Dataset]:
-        train_dataset = HierarchyINaturalist(root = '/data/common/iNaturalist/inat-mini-val',
-                                                  version = '2021_train_mini', target_type = ['full'],                        
+        train_dataset = HierarchyINaturalist(root = '/data/common/iNaturalist/train_mini',
+                                                version = '2021_train_mini', target_type = ['full'],                        
                                                 transform = transforms.Compose([
                                                 transforms.RandomResizedCrop(224),
                                                 transforms.RandomHorizontalFlip(),
@@ -82,9 +98,8 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
                                                 transforms.Normalize([0.466, 0.471, 0.380], [0.195, 0.194, 0.192])
                                             ]))
         # not augment test set except of normalization
-        test_dataset = HierarchyINaturalist(
-                                                  root = '/data/common/iNaturalist/inat-mini-val',
-                                                  version = '2021_valid', target_type = ['full'],                        
+        test_dataset = HierarchyINaturalist(root = '/data/common/iNaturalist/val',
+                                                version = '2021_valid', target_type = ['full'],                        
                                                 transform = transforms.Compose([
                                                 transforms.Resize(256),
                                                 transforms.CenterCrop(224),
@@ -107,11 +122,10 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
         # keep 60% in source, 40% in target
         c2f = {}
 
-        for fine_id, coarse_id in zip(train_dataset.fine_map, train_dataset.coarse_map):
+        for fine_id, coarse_id in enumerate(train_dataset.coarse_map):
             if coarse_id not in c2f:
-                c2f[coarse_id] = [fine_id]
-            else:
-                c2f[coarse_id].append(fine_id)
+                c2f[coarse_id] = []
+            c2f[coarse_id].append(fine_id)
         coarse_counts = {coarse_id: len(fine_ids) for coarse_id, fine_ids in c2f.items()}
 
         # remove coarse and fine id where number of fine classes = 1, 2,
@@ -154,16 +168,16 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
 
         source_fine_cls = list(set(range(len(train_dataset.fine_names))) - set(target_fine_cls))
         source_train = HierarchyINaturalistSubset(idx_train_source, source_fine_cls, 
-                                                  root = '/data/common/iNaturalist/inat-mini-val',
+                                                  root = '/data/common/iNaturalist/train_mini',
                                                   version = '2021_train_mini', target_type = ['full'],                        
                                                 transform = transforms.Compose([
                                                 transforms.RandomResizedCrop(224),
                                                 transforms.RandomHorizontalFlip(),
                                                 transforms.ToTensor(),
                                                 transforms.Normalize([0.466, 0.471, 0.380], [0.195, 0.194, 0.192])
-                                            ]))
+                                            ]))                              
         source_test = HierarchyINaturalistSubset(idx_test_source, source_fine_cls, 
-                                                  root = '/data/common/iNaturalist/inat-mini-val',
+                                                  root = '/data/common/iNaturalist/val',
                                                   version = '2021_valid', target_type = ['full'],                        
                                                 transform = transforms.Compose([
                                                 transforms.Resize(256),
@@ -172,7 +186,7 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
                                                 transforms.Normalize([0.466, 0.471, 0.380], [0.195, 0.194, 0.192])
                                             ]))
         target_train = HierarchyINaturalistSubset(idx_train_target, target_fine_cls, 
-                                                  root = '/data/common/iNaturalist/inat-mini-val',
+                                                  root = '/data/common/iNaturalist/train_mini',
                                                   version = '2021_train_mini', target_type = ['full'],                        
                                                 transform = transforms.Compose([
                                                 transforms.RandomResizedCrop(224),
@@ -181,7 +195,7 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
                                                 transforms.Normalize([0.466, 0.471, 0.380], [0.195, 0.194, 0.192])
                                             ]))
         target_test = HierarchyINaturalistSubset(idx_test_target, target_fine_cls, 
-                                                  root = '/data/common/iNaturalist/inat-mini-val',
+                                                  root = '/data/common/iNaturalist/val',
                                                   version = '2021_valid', target_type = ['full'],                        
                                                 transform = transforms.Compose([
                                                 transforms.Resize(256),
@@ -217,93 +231,4 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
     return train_loader, test_loader
 
 
-
-# if __name__ == '__main__':
-#     num_workers = 1
-#     batch_size = 128
-#     task = ['sub_split_pretrain','sub_split_downstream','sub_split_zero_shot']
-#     for t in task:
-#         print(t)
-#         train_loader, test_loader = make_dataloader(num_workers, batch_size, t)
-
-# class INaturalist12(Dataset):
-#     def __init__(self, train, split):
-#         if split == 'source':
-#             self.fine_id = [9979, 9980, 9984, 9985]
-#             self.fine_names = ['atropurpurea', 'glabella',
-#                                 'cretica', 'macilenta']
-#             self.coarse_names = ['Pellaea','Pteris']
-#             self.fine_map = np.arange(4)
-#             self.coarse_map = np.array([0,0,1,1])
-#         elif split == 'target':
-#             self.fine_id = [9981, 9982, 9986, 9987]
-#             self.fine_names = ['mucronata', 'rotundifolia', 
-#                                 'tremula','vittata']
-#             self.coarse_names = ['Pellaea','Pteris']
-#             self.fine_map = np.arange(4)
-#             self.coarse_map = np.array([0,0,1,1])
-#         elif split == 'ood':
-#             self.fine_id = [9976, 9977, 9969, 9970]
-#             self.fine_names = ['aurea','parryi','hispidulum','jordanii']
-#             self.coarse_names = ['Myriopteris','Adiantum']
-#             self.fine_map = np.arange(4)
-#             self.coarse_map = np.array([0,0,1,1])
-#         self.split = split
-#         self.img_size = 224
-#         self.channel = 3
-#         self.train = train
-#         # transform refers to https://github.com/naver-ai/cmo/blob/main/inat18_train.py#L163-L175
-#         if self.train:
-#             self.transform = transforms.Compose([
-#                 transforms.RandomResizedCrop(224),
-#                 transforms.RandomHorizontalFlip(),
-#                 transforms.ToTensor(),
-#                 transforms.Normalize([0.466, 0.471, 0.380], [0.195, 0.194, 0.192])
-#             ])  
-#         else:
-#             self.transform = transforms.Compose([
-#                 transforms.Resize(256),
-#                 transforms.CenterCrop(224),
-#                 transforms.ToTensor(),
-#                 transforms.Normalize([0.466, 0.471, 0.380], [0.195, 0.194, 0.192])
-#             ])
-
-
-#         if self.train:
-#             INaturalist_base = INaturalist(root = '/data/common/iNaturalist/train_mini', version = '2021_train_mini', target_type = ['full'], train = self.train) 
-#         else:
-#             INaturalist_base = INaturalist(root = '/data/common/iNaturalist/val', version = '2021_valid', target_type = ['full'], train = self.train)
-#         INaturalist_base.targets = np.array(INaturalist_base.all_categories)                   
-#         # fine_idx = [INaturalist_base.categories_index['full'][n] for n in self.fine_names]
-#         reset_idx_map = {idx:i for i,idx in enumerate(self.fine_id)}
-
-#         all_image_indices = [idx for idx, (cat_id, _) in enumerate(INaturalist_base.index)]
-#         selected_image_indices = [idx for idx in all_image_indices if INaturalist_base.index[idx][0] in self.fine_id]
-#         self.data = [INaturalist_base[idx][0] for idx in selected_image_indices]
-#         self.targets = [reset_idx_map[INaturalist_base.index[idx][0]] for idx in selected_image_indices]
-
-#         # target_idx = np.concatenate([np.argwhere(INaturalist_base.targets == i).flatten() for i in fine_idx])
-#         # self.data = INaturalist_base.data[target_idx]
-#         # self.targets = INaturalist_base.targets[target_idx]
-#         # self.targets = [reset_idx_map[i] for i in self.targets]
-        
-#         self.mid_map = None
-#         self.coarsest_map = None
-#         self.mid2coarse = None
-
-#     def __len__(self):
-#         return len(self.targets)
-
-#     def __getitem__(self, index: int):
-#         img = self.data[index]
-#         target_fine = int(self.targets[index])
-
-#         target_coarser = -1 # dummy
-#         target_mid = -1 # dummy
-#         target_coarse = int(self.coarse_map[target_fine])
-#         img = Image.fromarray(img)
-
-#         if self.transform is not None:
-#             img = self.transform(img)
-#         return img, target_coarser, target_coarse, target_mid, target_fine
 
