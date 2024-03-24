@@ -9,6 +9,7 @@ import dataset.cifar12.data as cifar12
 import dataset.breeds2.data as breeds2
 import dataset.mnist.data as mnist
 import dataset.breeds.data as breeds
+import dataset.inat.data as inat
 # import inaturalist.data as inat
 
 
@@ -72,4 +73,6 @@ def make_dataloader(num_workers : int, batch_size : int, task : str, dataset : s
         if breeds_setting is None:
             raise ValueError("Please specify --breeds_setting as any of living17 | entity13 | entity30 | nonliving26")
         train_loader, test_loader = breeds2.make_dataloader(num_workers, batch_size, task, breeds_setting)
+    elif dataset == 'INAT':
+        train_loader, test_loader = inat.make_dataloader(num_workers, batch_size, task)
     return train_loader, test_loader

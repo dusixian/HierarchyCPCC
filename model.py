@@ -7,6 +7,7 @@ import dataset.cifar12.model as cifar12
 import dataset.mnist.model as mnist
 import dataset.breeds.model as breeds
 import dataset.breeds2.model as breeds2
+import dataset.inat.model as inat
 
 from typing import *
 
@@ -26,4 +27,6 @@ def init_model(dataset : str, num_classes : List[int], device : torch.device):
         model = nn.DataParallel(breeds.ResNet18(num_classes)).to(device)
     elif dataset == 'BREEDS2':
         model = nn.DataParallel(breeds2.ResNet18(num_classes)).to(device)
+    elif dataset == 'INAT':
+        model = nn.DataParallel(inat.ResNet18(num_classes)).to(device)
     return model
