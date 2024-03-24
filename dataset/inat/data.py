@@ -11,10 +11,11 @@ from tqdm import tqdm
 # from hierarchy.data import Hierarchy, get_k_shot
 
 import os
+import json
 
 class HierarchyINaturalist(INaturalist):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)                
+        super().__init__(*args, **kwargs)             
         self.species_label = np.array(self.categories_map)
         self.targets = [self.index[idx][0] for idx in range(len(self.index))] # index -> species
         self.fine_map = np.array([d['class'] for d in self.species_label]) # species -> fine
@@ -34,6 +35,7 @@ class HierarchyINaturalist(INaturalist):
         
         self.mid_names = np.array([str(i) for i in range(len(np.unique(self.mid_map)))])
         self.coarse_names = np.array([str(i) for i in range(len(np.unique(self.coarse_map)))])
+        self.mid2coarse = None
 
         self.img_size = 224
         self.channel = 3
@@ -109,64 +111,91 @@ def make_dataloader(num_workers : int, batch_size : int, task : str) -> Tuple[Da
         return train_dataset, test_dataset
 
     def make_subpopsplit_dataset(train_dataset, test_dataset, task : str) -> Tuple[DataLoader, DataLoader]: 
-        train_all_fine_map = train_dataset.targets
-        train_sortidx = np.argsort(train_all_fine_map)
-        train_sorted_fine_map = np.array(train_all_fine_map)[train_sortidx]
-        # a dictionary that maps coarse id to a list of fine id
-        target_fine_dict = {i:[] for i in range(len(train_dataset.coarse_names))}
-        idx_train_source = [] # index of image (based on original Pytorch CIFAR dataset) that sends to source
-        idx_train_target = []
-        f2c = dict(zip(range(len(train_dataset.fine_names)),train_dataset.coarse_map))
-        
-        # finish c2f, know each coarse -> which set of fine class
-        # keep 60% in source, 40% in target
-        c2f = {}
+        subset_info_path = "./dataset/inat/subset_info.json"
 
-        for fine_id, coarse_id in enumerate(train_dataset.coarse_map):
-            if coarse_id not in c2f:
-                c2f[coarse_id] = []
-            c2f[coarse_id].append(fine_id)
-        coarse_counts = {coarse_id: len(fine_ids) for coarse_id, fine_ids in c2f.items()}
+        if os.path.exists(subset_info_path):
+            # Load subset information
+            with open(subset_info_path, "r") as f:
+                subset_info = json.load(f)
+            
+            idx_train_source = subset_info["idx_train_source"]
+            idx_train_target = subset_info["idx_train_target"]
+            source_fine_cls = subset_info["source_fine_cls"]
+            target_fine_cls = subset_info["target_fine_cls"]
+            idx_test_source = subset_info["idx_test_source"]
+            idx_test_target = subset_info["idx_test_target"]
 
-        # remove coarse and fine id where number of fine classes = 1, 2,
-        # since 40-60 split will cause empty source/train coarse id
-        small_coarse_set = {key for key, count in coarse_counts.items() if count <= 2}
-        
-        for idx in tqdm(range(len(train_sortidx)), desc="splitting indices"): # loop thru all argsort fine
-            coarse_id = f2c[train_sorted_fine_map[idx]]
-            if coarse_id not in small_coarse_set:
-                target_fine_dict[coarse_id].append(train_sorted_fine_map[idx])
-                if len(set(target_fine_dict[coarse_id])) <= int(0.4 * coarse_counts[coarse_id]): 
-                    # 40% to few shot second stage
-                    idx_train_target.append(train_sortidx[idx])
+        else:
+            train_all_fine_map = train_dataset.targets
+            train_sortidx = np.argsort(train_all_fine_map)
+            train_sorted_fine_map = np.array(train_all_fine_map)[train_sortidx]
+            # a dictionary that maps coarse id to a list of fine id
+            target_fine_dict = {i:[] for i in range(len(train_dataset.coarse_names))}
+            idx_train_source = [] # index of image (based on original Pytorch CIFAR dataset) that sends to source
+            idx_train_target = []
+            f2c = dict(zip(range(len(train_dataset.fine_names)),train_dataset.coarse_map))
+            
+            # finish c2f, know each coarse -> which set of fine class
+            # keep 60% in source, 40% in target
+            c2f = {}
+
+            for fine_id, coarse_id in enumerate(train_dataset.coarse_map):
+                if coarse_id not in c2f:
+                    c2f[coarse_id] = []
+                c2f[coarse_id].append(fine_id)
+            coarse_counts = {coarse_id: len(fine_ids) for coarse_id, fine_ids in c2f.items()}
+
+            # remove coarse and fine id where number of fine classes = 1, 2,
+            # since 40-60 split will cause empty source/train coarse id
+            small_coarse_set = {key for key, count in coarse_counts.items() if count <= 2}
+            
+            for idx in tqdm(range(len(train_sortidx)), desc="splitting indices"): # loop thru all argsort fine
+                coarse_id = f2c[train_sorted_fine_map[idx]]
+                if coarse_id not in small_coarse_set:
+                    target_fine_dict[coarse_id].append(train_sorted_fine_map[idx])
+                    if len(set(target_fine_dict[coarse_id])) <= int(0.4 * coarse_counts[coarse_id]): 
+                        # 40% to few shot second stage
+                        idx_train_target.append(train_sortidx[idx])
+                    else:
+                        # if we have seen the third type of fine class
+                        # since sorted, we have checked all images of the first
+                        # two types. For the rest of images,
+                        # send to source
+                        idx_train_source.append(train_sortidx[idx])
+            
+            for key in target_fine_dict:
+                target = target_fine_dict[key] # fine label id for [coarse]
+                d = {x: True for x in target}
+                target_fine_dict[key] = list(d.keys())[:int(0.4 * coarse_counts[key])] # all UNIQUE fine classes sent to target for [coarse]
+
+            target_fine_cls = [] # all 40% fine classes sent to target
+            for key in target_fine_dict:
+                target_fine_cls.extend(target_fine_dict[key])
+
+            test_all_fine_map = test_dataset.targets
+            idx_test_source = []
+            idx_test_target = []
+            for idx in range(len(test_all_fine_map)):
+                fine_id = test_all_fine_map[idx]
+                coarse_id = f2c[fine_id]
+                if fine_id in target_fine_dict[coarse_id]:
+                    idx_test_target.append(idx)
                 else:
-                    # if we have seen the third type of fine class
-                    # since sorted, we have checked all images of the first
-                    # two types. For the rest of images,
-                    # send to source
-                    idx_train_source.append(train_sortidx[idx])
+                    idx_test_source.append(idx)
+
+            source_fine_cls = list(set(range(len(train_dataset.fine_names))) - set(target_fine_cls))
+
+            subset_info = {
+                'idx_train_source': [int(i) for i in idx_train_source],
+                'idx_train_target': [int(i) for i in idx_train_target],
+                'source_fine_cls': [int(i) for i in source_fine_cls],
+                'target_fine_cls': [int(i) for i in target_fine_cls],
+                'idx_test_source': [int(i) for i in idx_test_source],
+                'idx_test_target': [int(i) for i in idx_test_target]
+            }
+            with open(subset_info_path, "w") as f:
+                json.dump(subset_info, f)
         
-        for key in target_fine_dict:
-            target = target_fine_dict[key] # fine label id for [coarse]
-            d = {x: True for x in target}
-            target_fine_dict[key] = list(d.keys())[:int(0.4 * coarse_counts[key])] # all UNIQUE fine classes sent to target for [coarse]
-
-        target_fine_cls = [] # all 40% fine classes sent to target
-        for key in target_fine_dict:
-            target_fine_cls.extend(target_fine_dict[key])
-
-        test_all_fine_map = test_dataset.targets
-        idx_test_source = []
-        idx_test_target = []
-        for idx in range(len(test_all_fine_map)):
-            fine_id = test_all_fine_map[idx]
-            coarse_id = f2c[fine_id]
-            if fine_id in target_fine_dict[coarse_id]:
-                idx_test_target.append(idx)
-            else:
-                idx_test_source.append(idx)
-
-        source_fine_cls = list(set(range(len(train_dataset.fine_names))) - set(target_fine_cls))
         source_train = HierarchyINaturalistSubset(idx_train_source, source_fine_cls, 
                                                   root = '/data/common/iNaturalist/train_mini',
                                                   version = '2021_train_mini', target_type = ['full'],                        

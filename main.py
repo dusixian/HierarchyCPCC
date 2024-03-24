@@ -1091,7 +1091,7 @@ def downstream_zeroshot(seeds : int , save_dir, split, task, save_name, source_t
                         target_layer = target_fine
                     
                     if 'MTL' in exp_name:
-                        _, _, output_fine = model(data)
+                        _, _, output_one = model(data)
                     else:
                         _, output_one = model(data)
                     
@@ -1160,10 +1160,12 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
         precisions = []
         recalls = []
         # Check if the level is valid
-        assert level in ['coarse', 'mid', 'fine'], f"Invalid level: {level}"
+        assert level in ['coarsest', 'coarse', 'mid', 'fine'], f"Invalid level: {level}"
         for seed in range(seeds):
             # Load model based on level
-            if level == 'coarse':
+            if level == 'coarsest':
+                target_num = len(train_dataset.coarsest_names)
+            elif level == 'coarse':
                 target_num = len(train_dataset.coarse_names)
             elif level == 'mid':
                 target_num = len(train_dataset.mid_names)
@@ -1171,7 +1173,10 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                 assert level == 'fine'
                 target_num = len(train_dataset.fine_names)
 
-            model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
+            if 'MTL' in exp_name:
+                model = init_model(dataset_name, [len(train_dataset.coarse_names),len(train_dataset.fine_names)], device)
+            else:
+                model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
             model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
             model.eval()
 
@@ -1187,14 +1192,19 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
             with torch.no_grad():
                 for item in train_loader:
                     data = item[0].to(device)
-                    if level ==  'coarse':
+                    if level ==  'coarsest':
+                        target = item[-4]
+                    elif level ==  'coarse':
                         target = item[-3]
                     elif level == 'mid':
                         target = item[-2]
                     else:
                         assert level == 'fine'
                         target = item[-1]
-                    representation, _ = model(data)
+                    if 'MTL' in exp_name:
+                        representation, _, _ = model(data)
+                    else:
+                        representation, _ = model(data)
                     for it, t in enumerate(target):
                         prototypes[t.item()].append(representation[it].cpu().numpy())
 
@@ -1205,7 +1215,9 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                 # Process test_loader for retrieval
                 for item in tqdm(test_loader):
                     data = item[0].to(device)
-                    if level == 'coarse':
+                    if level ==  'coarsest':
+                        target = item[-4]
+                    elif level == 'coarse':
                         target = item[-3]
                     elif level == 'mid':
                         target = item[-2]
@@ -1213,7 +1225,10 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
                         assert level == 'fine'
                         target = item[-1]
                     all_targets.extend(target.cpu().numpy())
-                    test_embs, _ = model(data)
+                    if 'MTL' in exp_name:
+                        test_embs, _, _ = model(data)
+                    else:
+                        test_embs, _ = model(data)
                     test_embs = test_embs.cpu().detach().numpy()
                     
                     for it, t in enumerate(target):
@@ -1268,7 +1283,9 @@ def retrieval_similarity(seeds, save_dir, split, task, task_name, train_loader,
 
 def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_name : str, seed : int):
     dataset = dataloader.dataset
-    if train_on_mid:
+    if 'MTL' in exp_name:
+        model = init_model(dataset_name, [len(dataset.coarse_names),len(dataset.fine_names)], device)
+    elif train_on_mid:
         model = init_model(dataset_name, [len(dataset.mid_names)], device)
     elif coarse_ce:
         model = init_model(dataset_name, [len(dataset.coarse_names)], device)
@@ -1301,7 +1318,10 @@ def feature_extractor(dataloader : DataLoader, split : str, task : str, dataset_
             target_one = target_one.to(device)
             if coarse_ce:
                 target_fine = target_fine.to(device)
-            feature, output = model(data)
+            if 'MTL' in exp_name:
+                feature, _, output = model(data)
+            else:
+                feature, output = model(data)
             prob_one = F.softmax(output,dim=1)
             probs.append(prob_one.cpu().detach().numpy())
             features.append(feature.cpu().detach().numpy())
@@ -1325,13 +1345,13 @@ def ood_detection(seeds : int, dataset_name : str, exp_name : str, task : str, s
         Set CIFAR10 as the outlier of CIFAR100.
         Credit: https://github.com/boschresearch/rince/blob/cifar/out_of_dist_detection.py
     '''
-    import cifar.data
-    import cifar12.data
+    import dataset.cifar.data
+    import dataset.cifar12.data
     assert dataset_name == 'CIFAR' or dataset_name == 'CIFAR12', 'Invalid dataset for OOD detection'
 
     if task == "sub":
-        in_train_loader, in_test_loader = cifar12.data.make_dataloader(num_workers, batch_size, 'sub_split_pretrain', difficulty)
-        _, out_test_loader = cifar12.data.make_dataloader(num_workers, batch_size, 'outlier', difficulty)
+        in_train_loader, in_test_loader = dataset.cifar12.data.make_dataloader(num_workers, batch_size, 'sub_split_pretrain', difficulty)
+        _, out_test_loader = dataset.cifar12.data.make_dataloader(num_workers, batch_size, 'outlier', difficulty)
     else:
         in_train_loader, in_test_loader = cifar.data.make_dataloader(num_workers, batch_size, 'full')
         _, out_test_loader = cifar.data.make_dataloader(num_workers, batch_size, 'outlier')
@@ -1659,7 +1679,10 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
 
     train_dataset = train_loader.dataset
     for seed in range(seeds):
-        model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
+        if 'MTL' in exp_name:
+            model = init_model(dataset_name, [len(train_dataset.coarse_names),len(train_dataset.fine_names)], device)
+        else:
+            model = init_model(dataset_name, [len(train_dataset.fine_names)], device)
         model.load_state_dict(torch.load(save_dir + f'/{split}{task}_seed{seed}.pth'))
         model.eval()
 
@@ -1672,7 +1695,10 @@ def better_classification_mistakes(seeds, save_dir, split, task, device, train_l
                 data = data.to(device)
                 target_coarse = target_coarse.to(device)
                 target_fine = target_fine.to(device)
-                test_representation, output = model(data)
+                if 'MTL' in exp_name:
+                    test_representation, _, output = model(data)
+                else:
+                    test_representation, output = model(data)
                 # simple classify
                 prob_fine = F.softmax(output,dim=1)
                 pred_fine = prob_fine.argmax(dim=1, keepdim=False)
@@ -1730,10 +1756,13 @@ def main():
             pretrain_objective(train_loader, test_loader, device, save_dir, seed, split, cpcc, exp_name, epochs, task, dataset_name, breeds_setting, hyper)
             
             # down
-            if dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
-                levels = ['fine']
-            else:
-                levels = ['mid', 'fine']
+            # if dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
+            #     levels = ['fine']
+            # else:
+            #     levels = ['mid', 'fine']
+
+            # only down on fine
+            levels = ['fine']
                 
             for level in levels: 
                 hyper = load_params(dataset_name, 'down', level, breeds_setting)
@@ -1748,14 +1777,14 @@ def main():
 
     if task == 'sub':
         # TODO: check levels
-        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
+        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10' or dataset_name == 'CIFAR' or datasest_name == 'INAT':
             levels = ['coarse', 'fine']
         elif dataset_name == 'BREEDS2':
             levels = ['coarse', 'mid', 'fine']
         else:
             levels = ['coarsest','coarse','fine'] 
         train_loader, test_loader = make_dataloader(num_workers, batch_size, 'sub_split_pretrain', dataset_name, case, breeds_setting, difficulty)
-        retrieve_downstream_metrics(save_dir, seeds, device, batch_size, level, cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
+        retrieve_downstream_metrics(save_dir, seeds, device, batch_size, 'fine', cpcc, exp_name, num_workers, task, dataset_name, case, breeds_setting)
         retrieval_similarity(seeds, save_dir, split, task, 'source', train_loader, test_loader, exp_name, device, dataset_name, levels)
         better_classification_mistakes(seeds, save_dir, split, task, device, train_loader, test_loader)
         retrieve_final_metrics(test_loader, dataset_name, 'pretrain')
@@ -1763,7 +1792,7 @@ def main():
     # Eval: zero-shot/ood
 
     if task == 'sub':
-        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10':
+        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10' or datasest_name == 'INAT':
             levels = ['coarse']
         elif dataset_name == 'BREEDS2':
             levels = ['coarse', 'mid', 'fine']
@@ -1798,7 +1827,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default="/data/common/cindy2000_sh", type=str, help='directory that you want to save your experiment results')
     parser.add_argument("--timestamp", required=True, help=r'your unique experiment id, hint: datetime.now().strftime("%m%d%Y%H%M%S")') 
-    parser.add_argument("--dataset", required=True, help='MNIST/CIFAR/CIFAR12/BREEDS/BREEDS2')
+    parser.add_argument("--dataset", required=True, help='MNIST/CIFAR/CIFAR12/BREEDS/BREEDS2/INAT')
     parser.add_argument("--exp_name", required=True, help='ERM/MTL/Curriculum/sumloss/HXE/soft/quad')
     parser.add_argument("--split", required=True, help='split/full')
     parser.add_argument("--task", default='', help='in/sub')
