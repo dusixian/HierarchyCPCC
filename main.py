@@ -1787,7 +1787,7 @@ def main():
 
     if task == 'sub':
         # TODO: check levels
-        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10' or dataset_name == 'CIFAR' or datasest_name == 'INAT':
+        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10' or dataset_name == 'CIFAR' or dataset_name == 'INAT':
             levels = ['coarse', 'fine']
         elif dataset_name == 'BREEDS2':
             levels = ['coarse', 'mid', 'fine']
@@ -1802,7 +1802,7 @@ def main():
     # Eval: zero-shot/ood
 
     if task == 'sub':
-        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10' or datasest_name == 'INAT':
+        if dataset_name == 'MNIST' or dataset_name == 'CIFAR12' or dataset_name == 'CIFAR10' or dataset_name == 'INAT':
             levels = ['coarse']
         elif dataset_name == 'BREEDS2':
             levels = ['coarse', 'mid', 'fine']
