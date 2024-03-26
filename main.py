@@ -254,6 +254,16 @@ def pretrain_objective(train_loader : DataLoader, test_loader : DataLoader, devi
                     max_epoch_num = epoch_num
                     checkpoint_filepath = os.path.join(checkpoint_dir, file)
 
+        if is_down:
+            checkpoint = torch.load(checkpoint_filepath)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            current_epoch = checkpoint['epoch']
+            torch.save(model.state_dict(), out_dir)
+            wandb.finish()
+            print(f"Loaded checkpoint from epoch {current_epoch}, model saved!")
+            return
+
+
         if max_epoch_num != -1:
             checkpoint = torch.load(checkpoint_filepath)
             model.load_state_dict(checkpoint['model_state_dict'])
@@ -1852,6 +1862,7 @@ if __name__ == '__main__':
     parser.add_argument("--num_workers", type=int, default=12)
     parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--seeds", type=int,default=5)    
+    parser.add_argument("--downstream", type=int, default=0, help='use max iter checkpoint as final model and do evaluation. assert seeds=1')
     
     args = parser.parse_args()
     timestamp = args.timestamp
@@ -1877,6 +1888,7 @@ if __name__ == '__main__':
     seeds = args.seeds
     lamb = args.lamb
     n_projections = args.n_projections
+    is_down = args.downstream
 
     root = args.root 
     
